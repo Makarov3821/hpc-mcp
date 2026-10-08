@@ -1,5 +1,7 @@
 """Durable execution records and append-only events."""
 
+from __future__ import annotations
+
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl

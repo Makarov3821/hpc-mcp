@@ -246,6 +246,101 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(result["run"]["cancel_requested"])
         self.assertEqual(result["run"]["state"], "pending")
 
+    def test_lsf_cancel_request_does_not_determine_final_state(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        self.jobs.job_cancel(run["run_id"])
+        replies = [CommandResult(0, "4242|EXIT|130|\n"),
+                   CommandResult(0, "4242|EXIT|130\n"),
+                   *[CommandResult(1, stderr="not found") for _ in range(3)]]
+        with patch.object(self.transport, "run", side_effect=replies):
+            result = self.jobs.job_status(run["run_id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["state"], "failed")
+        self.assertTrue(result["run"]["cancel_requested"])
+        self.assertIsNone(result["run"]["termination_reason"])
+
+    def test_lsf_exit_reason_comes_from_scheduler(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        self.jobs.job_cancel(run["run_id"])
+        for keyword, expected in (("TERM_OWNER", "cancelled"), ("TERM_RUNLIMIT", "failed")):
+            with self.subTest(keyword=keyword), patch.object(self.transport, "run",
+                return_value=CommandResult(0, f"4242|EXIT|130|{keyword}: scheduler reason\n")):
+                result = self.jobs.job_status(run["run_id"])
+            self.assertEqual(result["run"]["state"], expected)
+            self.assertEqual(result["run"]["termination_reason"], keyword)
+            self.assertEqual(result["run"]["status_source"], "bjobs")
+
+    def test_lsf_conflicting_history_does_not_reclassify_current_failure(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        output = ("Job <4242>, Status <EXIT>, Command <job.sh>\n"
+                  "Thu Oct 8 12:00:00 2026: Exited with exit code 130.\n"
+                  "Thu Oct 8 12:00:00 2026: Completed <exit>; TERM_OWNER: job killed by owner.\n")
+        with patch.object(self.transport, "run", side_effect=[
+            CommandResult(0, "4242|EXIT|7|\n"), CommandResult(0, "4242|EXIT|7\n"),
+            CommandResult(1), CommandResult(0, output), CommandResult(1)]):
+            result = self.jobs.job_status(run["run_id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["state"], "failed")
+        self.assertEqual(result["run"]["exit_code"], "7")
+        self.assertIsNone(result["run"]["termination_reason"])
+        self.assertIn("ignored", result["run"]["status_diagnostics"][3])
+
+    def test_lsf_older_bjobs_format_remains_supported(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        with patch.object(self.transport, "run", side_effect=[
+            CommandResult(1, stderr="unsupported exit_reason field"),
+            CommandResult(0, "4242|RUN|-\n")]):
+            result = self.jobs.job_status(run["run_id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["state"], "running")
+
+    def test_lsf_long_output_enriches_exit_without_losing_code(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        output = ("Job <4242>, User <user>, Status <EXIT>, Command <job.sh>\n"
+                  "Thu Oct 8 12:00:00 2026: Completed <exit>; TERM_OWNER: job killed by owner.\n")
+        with patch.object(self.transport, "run", side_effect=[
+            CommandResult(0, "4242|EXIT|130|\n"), CommandResult(0, "4242|EXIT|130\n"),
+            CommandResult(0, output)]):
+            result = self.jobs.job_status(run["run_id"])
+        self.assertEqual(result["run"]["state"], "cancelled")
+        self.assertEqual(result["run"]["exit_code"], "130")
+        self.assertEqual(result["run"]["status_source"], "bjobs_long")
+
+    def test_lsf_expired_record_falls_back_to_accounting_then_history(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        for source in ("bacct", "bhist"):
+            output = (f"Job <4242>, User <user>, Job Name <{run['run_id']}>, Command <job.sh>\n"
+                      "Thu Oct 8 12:00:00 2026: Done successfully. The CPU time used is 0.4 seconds;\n")
+            replies = [CommandResult(1, stderr="not found") for _ in range(3)]
+            if source == "bhist":
+                replies.append(CommandResult(1, stderr="accounting log unavailable"))
+            replies.append(CommandResult(0, output))
+            with self.subTest(source=source), patch.object(self.transport, "run", side_effect=replies):
+                result = self.jobs.job_status(run["run_id"])
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["run"]["state"], "succeeded")
+            self.assertEqual(result["run"]["status_source"], source)
+            self.assertEqual(result["run"]["exit_code"], "0")
+
+    def test_lsf_malformed_fallback_keeps_last_observation(self):
+        run = self.prepare()
+        self.jobs.job_submit(run["run_id"])
+        self.jobs.job_status(run["run_id"])
+        output = "Job <4242>, Status <DONE>\nJob <4242>, Status <EXIT>\n"
+        with patch.object(self.transport, "run", side_effect=[
+            CommandResult(1), CommandResult(1), CommandResult(1),
+            CommandResult(0, output), CommandResult(0, "Summary only")]):
+            result = self.jobs.job_status(run["run_id"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["run"]["state"], "succeeded")
+        self.assertIn("parse_error", result["run"]["status_diagnostics"][-1])
+
     def test_rejected_submission_is_not_retried(self):
         run = self.prepare()
         (self.bin / "bsub").write_text("#!/bin/bash\nprintf 'queue closed\\n' >&2\nexit 1\n")
@@ -403,6 +498,43 @@ class JobLifecycleTests(unittest.TestCase):
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_lsf_long_history_ignores_other_jobs_and_post_processing(self):
+        text = ("Job <9>, Status <DONE>, Command <another job>\n"
+                "Job <8>, User <user>, Command <echo TERM_OWNER>\n"
+                "Thu Oct 8 12:00:00 2026: Exited with exit code 7. The CPU time used is 1 seconds;\n"
+                "Thu Oct 8 12:00:01 2026: Post job process done successfully;\n")
+        detail = parse_status("lsf", text, "8", source="bhist")
+        self.assertEqual(detail["state"], "failed")
+        self.assertEqual(detail["exit_code"], "7")
+        self.assertIsNone(detail["termination_reason"])
+        self.assertIsNone(parse_status("lsf", text, "10", source="bacct"))
+
+    def test_lsf_long_cancellation_signal_limits_and_rerun(self):
+        header = "Job <8>, User <user>, Command <job.sh>\n"
+        for reason, expected in (("TERM_OWNER", "cancelled"), ("TERM_FORCE_ADMIN", "cancelled"),
+                                 ("TERM_RUNLIMIT", "failed"), ("TERM_EXTERNAL_SIGNAL", "failed")):
+            text = header + ("Thu Oct 8 12:00:00 2026: Exited by signal 9.\n"
+                             f"Thu Oct 8 12:00:00 2026: Completed <exit>; {reason}: description.\n")
+            with self.subTest(reason=reason):
+                detail = parse_status("lsf", text, "8", source="bacct")
+                self.assertEqual(detail["state"], expected)
+                self.assertEqual(detail["signal"], "9")
+                self.assertIsNone(detail["exit_code"])
+                self.assertEqual(detail["termination_reason"], reason)
+        text += "Thu Oct 8 12:01:00 2026: Requeued to queue <normal>;\n"
+        detail = parse_status("lsf", text, "8", source="bhist")
+        self.assertEqual(detail["state"], "pending")
+        self.assertIsNone(detail["termination_reason"])
+
+    def test_lsf_history_rejects_ambiguous_or_recycled_identity(self):
+        for text in ("Job <8>, Status <DONE>\nJob <8>, Status <EXIT>\n",
+                     "Job <8>, Job Name <different_run>, Status <DONE>\n"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_status("lsf", text, "8", source="bacct", expected_name="r_expected")
+        commands = query_commands("lsf", "8", "2026-10-08T09:00:00+00:00")
+        self.assertIn("-S 2026/10/07/00:00,", commands[3])
+        self.assertIn("-n 0", commands[4])
+
     def test_submission_ids(self):
         self.assertEqual(parse_job_id("lsf", "Job <123> is submitted to queue <q>.\n"), "123")
         self.assertEqual(parse_job_id("slurm", "123\n"), "123")

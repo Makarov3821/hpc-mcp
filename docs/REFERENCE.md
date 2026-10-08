@@ -97,7 +97,11 @@ prepare 创建本地输入快照，不执行脚本或上传。submit 在校验�
 
 提交意图保存在 SQLite，远程原子目录锁避免重复提交。响应丢失后只读回执恢复，不能盲目重试；回执缺失或响应无法解析维持 submission_unknown。
 上传失败可重试，拒绝提交需重新 prepare；取消只是请求，状态查询确认最终结果。
-Slurm 查询 squeue 再尝试 sacct；LSF 使用 bjobs -a。查询失败保留最后观测并返回错误，任务消失不推断成功。
+Slurm 查询 squeue 再尝试 sacct。LSF 首先使用包含 `exit_reason` 的 `bjobs -a -o`，旧版本不支持该字段时回退到原三列格式；必要时使用 `bjobs -l` 补充终止原因，再尝试 `bacct -l -S` 和 `bhist -a -l -n 0 -S` 查询记账／事件归档。历史查询从准备日期前一天开始，涵盖时区差异；归档保留、权限和命令超时仍可能限制查询结果。
+
+LSF 返回 `exit_code`、`exit_reason`、`termination_reason`、`signal` 及 `status_source`。仅 `EXIT` 且终止原因明确为 `TERM_OWNER`／`TERM_FORCE_OWNER`／`TERM_ADMIN`／`TERM_FORCE_ADMIN`／`TERM_BUCKET_KILL` 时归一化为 `cancelled`；限制超时、外部信号或原因不明的 `EXIT` 保持 `failed`。取消请求和退出码 130 本身不证明取消，原始状态仍保留为 `EXIT`。原因语义依据 [IBM 终止原因文档](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=logging-termination-reasons)。
+
+长格式只解析匹配作业 ID 的块及调度器时间戳事件，有作业名时校验其是否为 run_id；重复记录和不支持的格式记入诊断，不猜测结果。已有实时状态或退出码与历史冲突时保留优先观测。所有查询失败时保留最后状态并返回错误，任务消失不推断成功。已有 `EXIT` 观测但无法补齐原因时仍返回该观测和失败查询诊断。
 
 环境检查不会创建目录。队列可见不表示可以提交；共享目录可访问性需计算节点验证。LSF 槽位统计、Slurm 每节点内存及 GRES 原始字符串均保留调度器意义。
 SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理；本服务不存储密钥或密码。

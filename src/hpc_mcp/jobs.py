@@ -280,21 +280,44 @@ class JobService:
             return {"ok": False, "run": run, "error": "no confirmed job ID; use job_recover"}
         cluster = self._cluster(run)
         diagnostics = []
+        candidate = None
         for index, command in enumerate(query_commands(run["scheduler"], run["job_id"],
                                                        run["created_at"], run.get("scheduler_cluster"))):
+            source = ("bjobs", "bjobs", "bjobs_long", "bacct", "bhist")[index] \
+                if run["scheduler"] == "lsf" else ("squeue", "sacct")[index]
             result = self.transport.run(cluster, command)
             diagnostics.append({"command": command, **result.diagnostic()})
             if not result.ok:
                 continue
             try:
-                status = parse_status(run["scheduler"], result.stdout, run["job_id"], index > 0)
+                status = parse_status(run["scheduler"], result.stdout, run["job_id"], index > 0,
+                                      source, run["run_id"])
             except ValueError as exc:
                 diagnostics[-1]["parse_error"] = str(exc)
                 continue
-            if status:
-                updated = self.history.update(run_id, "status_observed", **status,
-                    last_status_query=now(), status_query_ok=True, status_diagnostics=diagnostics)
-                return {"ok": True, "run": updated}
+            if status and status["state"] != "unknown":
+                status["status_source"] = source
+                if candidate and status["raw_state"] != candidate["raw_state"]:
+                    diagnostics[-1]["ignored"] = "conflicts with earlier scheduler observation"
+                    continue
+                if candidate and candidate.get("exit_code") not in (None, "", "-") and \
+                        status.get("exit_code") not in (None, "", "-", candidate["exit_code"]):
+                    diagnostics[-1]["ignored"] = "exit code conflicts with earlier scheduler observation"
+                    continue
+                if candidate:
+                    for key in ("exit_code", "exit_reason", "termination_reason", "signal"):
+                        if status.get(key) is None:
+                            status[key] = candidate.get(key)
+                candidate = status
+                # EXIT alone is inconclusive about who terminated the job. Enrich it,
+                # retaining the observation even if all reason/history queries fail.
+                if run["scheduler"] != "lsf" or status["raw_state"] != "EXIT" or \
+                        status.get("termination_reason"):
+                    break
+        if candidate:
+            updated = self.history.update(run_id, "status_observed", **candidate,
+                last_status_query=now(), status_query_ok=True, status_diagnostics=diagnostics)
+            return {"ok": True, "run": updated}
         # Preserve the last observation; missing data is not evidence of success or failure.
         updated = self.history.update(run_id, "status_unavailable", last_status_query=now(),
                                       status_query_ok=False, status_diagnostics=diagnostics)
