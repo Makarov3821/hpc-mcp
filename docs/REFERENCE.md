@@ -1,6 +1,49 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；15 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；22 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+
+## 单任务脚本生成
+
+`script_generate(scheduler, spec)` 纯预览，不执行命令或写文件。`spec` 接受以下字段，未知字段拒绝：
+
+| 字段 | 内容 |
+| --- | --- |
+| `command` | 必填非空字符串数组，程序及 argv；不是待解析的 Shell 命令 |
+| `resources` | 下表中的资源设置，默认 CPU 为 1 |
+| `environment` | 环境变量名到字符串值的对象，默认空对象 |
+| `init_scripts` | 计算节点上可信初始化文件的绝对路径数组，默认空数组 |
+| `stdin`／`stdout`／`stderr` | 可选的执行目录内相对文件路径；不允许绝对路径或 `..` |
+
+| 资源字段 | 语义 |
+| --- | --- |
+| `cpus` | 正整数；Slurm 单 task 的 `--cpus-per-task`，LSF `-n` 并限制单 host |
+| `queue` | Slurm partition／LSF queue；省略使用调度器默认值 |
+| `memory_mb`／`memory_scope` | 必须一起指定；Slurm `job` 使用单节点 `--mem`，`per_cpu` 使用 `--mem-per-cpu`；LSF 仅接受 `lsf_reservation`，生成显式 MB 的 `rusage[mem=...]` |
+| `time_minutes` | 正整数分钟，渲染为调度器对应的时间格式 |
+| `account`／`qos` | Slurm 专用标识，不自动转换为 LSF 参数 |
+| `lsf_resource_requirement` | 可选 LSF 原生资源表达式，由用户核对站点支持，不自动转换到 Slurm |
+
+当前只生成单节点共享内存作业，不生成 MPI/GPU/数组配置。LSF 内存预留按 slot 或 job 的作用范围由站点配置决定；预留不等于硬限制。[Slurm sbatch](https://slurm.schedmd.com/sbatch.html)、[LSF 资源要求](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=o-r)。
+
+脚本使用 `set -euo pipefail`、引用的 source/export 和最后的 `exec`，保留程序退出码。argv、环境值、重定向路径使用 Shell 引用；若用户显式选择 `bash -c` 等解释器，其内部代码仍由用户负责。初始化先执行，随后设置声明的环境变量；这些 compute 初始化与集群登录环境的 `init_scripts` 是分别配置的。声明的 stdout/stderr 父目录在远程执行时创建，stdin 与 stdout/stderr 不可同名。
+
+`job_prepare_generated(cluster, input_dir, spec, outputs, project_root?, input_files?, script_name?, output_exclude?, input_exclude?, max_input_bytes?)` 把生成脚本只写入状态目录的输入快照，并返回原有 prepared run 与 `rendered`。默认 `script_name="hpc-mcp-job.sh"`，限定为非保留的文件名，不覆盖原输入。同样要求明确输出过滤；显式输入列表自动包含脚本和 stdin，其他依赖仍需声明。`job_submit` 才上传／执行。CLI `script-generate SCHEDULER SPEC.json`、`prepare-generated CLUSTER INPUT_DIR SPEC.json --output PATTERN ...`。
+
+## 模板与固定计划
+
+模板为结构化 JSON 定义，包含必填 `scheduler`、`spec`、非空 `outputs`，以及可选 `parameters`、`script_name`、`input_files`、`input_exclude`、`output_exclude`、`max_input_bytes`。`parameters` 是名字到 `{type, default?, description?}` 的映射；支持 string、integer、boolean，没有 default 就是必填。`{{name}}` 全值占位保留参数类型，嵌入字符串时转为文本；只替换值、不替换键，不求值，不允许未知参数或未声明占位。资源整数应用全值占位，argv 和环境最终仍须是字符串。
+
+| MCP 工具 | 行为 |
+| --- | --- |
+| `template_import(name, definition)` | 校验后在状态 SQLite 中创建新版本，保留已有版本及 SHA-256；不执行或导入任意脚本源码 |
+| `template_list(limit=50, offset=0)` | 按名称分页列出每个模板的最新版本 |
+| `template_get(name, version=null)` | 读取指定版本；省略版本取最新；校验存储内容的 SHA-256 |
+| `template_plan(name, cluster, input_dir, parameters=null, version=null, project_root=null)` | 绑定参数、校验调度器、生成脚本并准备输入快照；不提交，返回 `plan_id=run_id` |
+| `template_run(plan_id)` | 提交已经固定的计划，沿用提交锁、防重与不明回执恢复；不重新读取最新模板 |
+
+每个计划保存模板名、版本、定义校验值、完整定义、参数和实际脚本；准备快照变化会阻止提交，原目录变化不会改变快照。模板更新对已有计划无影响；每次重新规划创建新 run。模板操作不自动修改计算输入卡，也不扫描其他任务。目录回传与缓存规则保持不变。
+
+CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-get NAME [--version N]`、`template-plan NAME CLUSTER INPUT_DIR --parameters JSON [--version N] [--project-root A]`、`template-run PLAN_ID`。模板定义最大 256 KiB；名称最长 100 字符，使用字母／数字／点／下划线／短横线。此阶段尚未实现任意 Shell/Python 提交入口的源码导入。
 
 ## 设置层级
 
@@ -107,3 +150,10 @@ LSF 返回 `exit_code`、`exit_reason`、`termination_reason`、`signal` 及 `st
 
 环境检查不会创建目录。队列可见不表示可以提交；共享目录可访问性需计算节点验证。LSF 槽位统计、Slurm 每节点内存及 GRES 原始字符串均保留调度器意义。
 SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理；本服务不存储密钥或密码。
+
+## 更新检查与安装维护
+
+- `update_check(force=false, max_age_seconds=86400, timeout=10)`：每个新会话调用一次，向用户报告可用更新。公开 HTTPS API 比较本地提交和官方仓库 main；不访问 SSH。`force` 跳过缓存，缓存最长 604800 秒，0 禁用复用；每次请求超时 1..60 秒，最多两个请求。GitHub 限流或离线返回 `ok=false`、`update_available=null`，不覆盖上次成功缓存。
+- `update_plan` 接受同样参数，重新读取本地 Git 状态后返回 `check`、`blockers`、`commands`、`restart_required`。每条命令包含 `argv`（优先使用）、`cwd` 和供人阅读的 `display`。只为干净的官方 main editable/source 安装生成固定提交的快进方案；本地超前、分叉、其他 origin 或普通 wheel 安装需要人工处理。已经最新时 commands 为空。
+- 工具不执行更新。停止 MCP 连接后再次核对 Git 工作区，备份配置和完整状态目录，依次执行命令，失败即停。重启使用相同绝对配置、状态路径，然后验证工具发现和历史读取。远程作业继续由调度器运行，无需重新提交。
+- `settings_get.updates` 暴露默认检查参数及 `cached_check`。缓存是历史结果，可能过期；需要及时判断时调用 `update_check`。状态目录只多出一个小型 JSON 缓存，不修改任务数据。不自动配置定时任务或客户端文件，也不自动安装更新。

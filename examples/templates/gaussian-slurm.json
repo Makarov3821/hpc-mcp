@@ -1,0 +1,18 @@
+{
+  "scheduler": "slurm",
+  "spec": {
+    "command": ["g16"],
+    "stdin": "{{input}}",
+    "stdout": "{{stem}}.log",
+    "resources": {"queue": "{{queue}}", "cpus": "{{cpus}}", "time_minutes": 60}
+  },
+  "parameters": {
+    "input": {"type": "string", "description": "Input card path relative to the task directory"},
+    "stem": {"type": "string", "description": "Relative output stem for the Gaussian log"},
+    "checkpoint": {"type": "string", "description": "Actual relative checkpoint path declared by %chk"},
+    "queue": {"type": "string", "description": "User-selected Slurm partition"},
+    "cpus": {"type": "integer", "default": 1, "description": "Match the input card's shared-memory CPU request"}
+  },
+  "input_files": ["{{input}}"],
+  "outputs": ["{{stem}}.log", "{{checkpoint}}"]
+}

@@ -20,6 +20,8 @@ TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
 def relative_path(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("relative paths must be strings")
     path = PurePosixPath(value)
     if (not value or path.is_absolute() or ".." in path.parts or
             any(c in value for c in "\x00\r\n\\") or value == "."):
@@ -74,7 +76,8 @@ class JobService:
                     outputs: list[str] | None = None, output_mode: str | None = None,
                     output_exclude: list[str] | None = None, input_exclude: list[str] | None = None,
                     max_input_bytes: int | None = None, project_root: str | None = None,
-                    input_files: list[str] | None = None) -> dict:
+                    input_files: list[str] | None = None, generated_script: str | None = None,
+                    template_context: dict | None = None) -> dict:
         if cluster not in self.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         config = self.clusters[cluster]
@@ -84,6 +87,11 @@ class JobService:
         if source.is_relative_to(self.history.root):
             raise ValueError("input_dir cannot be inside the local state directory")
         script = relative_path(script)
+        if generated_script is not None:
+            if not isinstance(generated_script, str) or not generated_script.startswith("#!/bin/bash\n"):
+                raise ValueError("generated_script must be a Bash script")
+            if (source / script).exists() or (source / script).is_symlink():
+                raise ValueError("generated script path conflicts with an existing input")
         project = Path(project_root).expanduser().resolve() if project_root else None
         if project is not None:
             if not project.is_dir() or not source.is_relative_to(project):
@@ -98,6 +106,8 @@ class JobService:
                 raise ValueError("input_files must be a nonempty list of relative file paths")
             selected = {relative_path(p) for p in input_files} | {script}
             for path in selected:
+                if path == script and generated_script is not None:
+                    continue
                 if not (source / path).is_file():
                     raise ValueError(f"selected input must be an existing file: {path}")
         policy = replace(config, output_include=config.output_include if outputs is None else outputs,
@@ -136,6 +146,10 @@ class JobService:
 
         try:
             shutil.copytree(source, staged, dirs_exist_ok=True, ignore=ignore)
+            if generated_script is not None:
+                destination = staged / script
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(generated_script)
             if not (staged / script).is_file():
                 raise ValueError("script must be a regular included file within input_dir")
             text = (staged / script).read_text()
@@ -168,6 +182,10 @@ class JobService:
                           "脚本保持原样；绝对路径与程序内部输出位置需要用户自行核对。",
                           "不执行输入脚本；prepare 只创建本地快照，submit 才上传和提交。"],
             }
+            if generated_script is not None:
+                run["generated_script"] = generated_script
+            if template_context is not None:
+                run["template"] = template_context
             self.history.add(run)
             return {"ok": True, "run": run}
         except Exception:

@@ -14,8 +14,9 @@ from hpc_mcp.service import ClusterService
 
 
 class RecordingServer:
-    def __init__(self, name):
+    def __init__(self, name, **kwargs):
         self.tools = {}
+        self.instructions = kwargs.get("instructions")
 
     def tool(self):
         def register(function):
