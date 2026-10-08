@@ -1,0 +1,3 @@
+compute*|up|2-00:00:00|2|idle|32|128000|(null)|node[01-02]
+compute*|up|2-00:00:00|1|alloc|64|256000|(null)|node03
+gpu|down|INFINITE|1|drain|48|192000|gpu:a100:4|gpu01

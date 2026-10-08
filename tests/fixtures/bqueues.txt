@@ -1,0 +1,3 @@
+QUEUE_NAME      PRIO STATUS          MAX JL/U JL/P JL/H NJOBS  PEND   RUN  SUSP
+Gaussian         30 Open:Active       -    -    -    -    84    28    56     0
+Small            20 Closed:Inact     16    8  0.5    4     4     4     0     0

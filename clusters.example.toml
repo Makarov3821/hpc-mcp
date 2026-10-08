@@ -1,0 +1,27 @@
+# Copy to clusters.toml and replace SSH aliases and paths.
+[clusters.lsf_example]
+ssh_host = "my-lsf"
+scheduler = "lsf"
+work_root = "/shared/home/your-user/jobs"
+# Trusted remote initialization scripts; executed before each check/query.
+init_scripts = []
+connect_timeout = 10
+command_timeout = 30
+transfer_timeout = 300
+ssh_output_limit = 1048576
+# New runs download all regular files, including uploaded inputs.
+output_mode = "all"
+output_include = ["**"]
+output_exclude = []
+sync_layout = "snapshot" # "direct" places results directly in run_id/outputs.
+sync_overwrite = "error" # "replace" archives old results; "merge" retains unmatched files.
+transfer_checksum = true
+transfer_compress = false
+max_input_bytes = 1073741824
+input_exclude = [".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".xn02", "clusters.toml"]
+
+[clusters.slurm_example]
+ssh_host = "my-slurm"
+scheduler = "slurm"
+work_root = "/shared/home/your-user/jobs"
+init_scripts = []

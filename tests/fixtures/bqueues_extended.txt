@@ -1,0 +1,14 @@
+QUEUE_NAME     PRIO      STATUS      MAX  JL/U JL/P JL/H NJOBS  PEND  RUN  SUSP  RSV  PJOBS
+Coding           3    Open:Active      -    -    -    -     0     0     0     0    0      0
+RTX              3    Open:Active      -    -    -    -    36    36     0     0    0     35
+RTX3070          3    Open:Active      -    -    -    -   929   913    16     0    0    892
+TitanV           3    Open:Active      -    -    -    -     0     0     0     0    0      0
+RTX4070          3    Open:Active      -    -    -    -   203   163    40     0    0     93
+RTX4090          3    Open:Active      -    -    -    -     2     0     2     0    0      0
+Single           3    Open:Active      -    -    -    -    15     5    10     0    0      5
+Small            3    Open:Active      -    -    -    -    16     8     8     0    0      4
+xppn3            3    Open:Active      -    -    -   28     0     0     0     0    0      0
+AMD9654          3    Open:Active      -    -    -    -  1840   496  1344     0    0      6
+AMD9965          3    Open:Active      -    -    -    -  2576  1040  1536     0    0     43
+Gaussian         3    Open:Active      -    -    -    -   208    32   176     0    0      1
+REST             3    Open:Active      -    -    -    -     0     0     0     0    0      0
