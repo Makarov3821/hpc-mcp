@@ -31,13 +31,15 @@ SSH User、IdentityFile、Port、ProxyJump 留在用户的 OpenSSH 配置中。�
 git clone git@github.com:Makarov3821/hpc-mcp.git
 cd hpc-mcp
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[mcp]'
+.venv/bin/python -m pip install -c requirements-mcp.lock -e '.[mcp]'
 .venv/bin/hpc-mcp --help
 ```
 
 未配置 GitHub SSH 身份时可使用 `git clone https://github.com/Makarov3821/hpc-mcp.git`。这与登录计算集群所需的 SSH 配置分别管理。
 
 安装使用官方 Python MCP SDK v2（`mcp>=2,<3`）。若下载失败，报告依赖安装未完成，不将能运行标准库 CLI 当成 MCP 安装成功。
+
+`requirements-mcp.lock` 保存已验收的 SDK 及依赖版本（当前为 SDK 2.3.0，Linux／Python 3.14 环境），通过 `-c` 约束安装。其他 Python 版本与平台仍需安装并运行协议测试验收；遇到不兼容时报告具体依赖，不静默忽略约束。项目自身仍支持 Python 3.11+。
 
 后续所有示例中的 `/ABS/REPO`、`/ABS/STATE`、`YOUR_SSH_ALIAS` 和路径均替换为实际值。MCP 启动命令必须使用绝对路径，避免依赖当前目录、激活的虚拟环境或 `PYTHONPATH`。
 
@@ -181,7 +183,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 git status --short
 # 如有本地代码修改，先保存并处理；工作区干净后继续。
 git pull --ff-only
-.venv/bin/python -m pip install --upgrade -e '.[mcp]'
+.venv/bin/python -m pip install --upgrade -c requirements-mcp.lock -e '.[mcp]'
 .venv/bin/hpc-mcp --help
 ```
 
@@ -214,11 +216,13 @@ codex mcp list
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 python3 -m compileall -q src tests
+# 安装 MCP extra 后，使用其虚拟环境执行完整测试，包括真实 stdio 子进程：
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-用户已在真实 LSF 上完成提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；Slurm 实际作业及 MCP SDK 握手仍需目标环境验收，依赖锁文件尚未生成。
+用户已在真实 LSF 上完成提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、15 个工具及其参数发现、结构化结果、配置更新、任务准备和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
 当前支持普通批处理脚本；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 

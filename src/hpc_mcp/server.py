@@ -4,6 +4,7 @@ from .service import ClusterService
 from .jobs import JobService
 from .config import Cluster, ConfigManager
 from dataclasses import asdict
+from typing import Any
 
 
 def create_server(service: ClusterService, jobs: JobService, config: ConfigManager | None = None):
@@ -12,7 +13,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     server = MCPServer("hpc-mcp")
 
     @server.tool()
-    def settings_get(cluster: str | None = None) -> dict:
+    def settings_get(cluster: str | None = None) -> dict[str, Any]:
         """Discover every cluster setting and server startup path.
 
         Without cluster, returns a complete default settings template; otherwise returns
@@ -25,7 +26,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                 "config_path": str(config.path) if config else None}
 
     @server.tool()
-    def cluster_configure(cluster: str, settings: dict) -> dict:
+    def cluster_configure(cluster: str, settings: dict) -> dict[str, Any]:
         """Create/update a configured cluster using settings_get's settings keys.
 
         Atomically persists TOML and applies settings immediately. Changing a prepared
@@ -42,7 +43,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return service.list_clusters()
 
     @server.tool()
-    def cluster_check(cluster: str) -> dict:
+    def cluster_check(cluster: str) -> dict[str, Any]:
         """Check SSH, configured environment, scheduler commands and directory access.
 
         Does not submit jobs or create directories. Shared storage remains unverified.
@@ -50,7 +51,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return service.cluster_check(cluster)
 
     @server.tool()
-    def cluster_info(cluster: str) -> dict:
+    def cluster_info(cluster: str) -> dict[str, Any]:
         """Query visible LSF queues or Slurm partitions with structured resource information."""
         return service.cluster_info(cluster)
 
@@ -59,7 +60,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     outputs: list[str] | None = None, output_mode: str | None = None,
                     output_exclude: list[str] | None = None, input_exclude: list[str] | None = None,
                     max_input_bytes: int | None = None, project_root: str | None = None,
-                    input_files: list[str] | None = None) -> dict:
+                    input_files: list[str] | None = None) -> dict[str, Any]:
         """Create a local immutable input snapshot and reviewable submission plan.
 
         Script is relative to input_dir. Outputs are rsync include patterns.
@@ -72,7 +73,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                                 input_exclude, max_input_bytes, project_root, input_files)
 
     @server.tool()
-    def job_submit(run_id: str) -> dict:
+    def job_submit(run_id: str) -> dict[str, Any]:
         """Upload, verify and submit a prepared run. Repeated calls never blindly resubmit.
 
         Executes the user's batch script on the configured cluster.
@@ -80,38 +81,38 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return jobs.job_submit(run_id)
 
     @server.tool()
-    def job_list(cluster: str | None = None, limit: int = 50, offset: int = 0) -> dict:
+    def job_list(cluster: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Read persistent local execution history with pagination."""
         return jobs.job_list(cluster, limit, offset)
 
     @server.tool()
-    def job_get(run_id: str) -> dict:
+    def job_get(run_id: str) -> dict[str, Any]:
         """Read a saved plan, file manifests and execution events without querying the cluster."""
         return jobs.job_get(run_id)
 
     @server.tool()
-    def job_status(run_id: str) -> dict:
+    def job_status(run_id: str) -> dict[str, Any]:
         """Query the scheduler; unavailable records retain the last known state."""
         return jobs.job_status(run_id)
 
     @server.tool()
-    def job_recover(run_id: str) -> dict:
+    def job_recover(run_id: str) -> dict[str, Any]:
         """Recover an ambiguous submission using its remote receipt without submitting again."""
         return jobs.job_recover(run_id)
 
     @server.tool()
-    def job_logs(run_id: str, stream: str = "stdout", lines: int = 100) -> dict:
+    def job_logs(run_id: str, stream: str = "stdout", lines: int = 100) -> dict[str, Any]:
         """Read the last 1..1000 lines of the run's stdout or stderr log."""
         return jobs.job_logs(run_id, stream, lines)
 
     @server.tool()
-    def job_cancel(run_id: str) -> dict:
+    def job_cancel(run_id: str) -> dict[str, Any]:
         """Request cancellation of a confirmed job; query status to confirm the outcome."""
         return jobs.job_cancel(run_id)
 
     @server.tool()
     def job_cache_cleanup(run_id: str, older_than_seconds: int = 86400,
-                          dry_run: bool = True) -> dict:
+                          dry_run: bool = True) -> dict[str, Any]:
         """Preview/delete inactive sync attempts for a run, under its operation lock.
 
         Never removes snapshots, installed results, history or remote data. Use dry_run=false
@@ -124,7 +125,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                  excludes: list[str] | None = None, destination: str | None = None,
                  layout: str | None = None, overwrite: str | None = None,
                  checksum: bool | None = None, compress: bool | None = None,
-                 timeout: int | None = None) -> dict:
+                 timeout: int | None = None) -> dict[str, Any]:
         """Download outputs using fully configurable rules; null arguments use saved/default settings.
 
         mode: all/filtered; includes/excludes: relative rsync patterns (excludes win).
