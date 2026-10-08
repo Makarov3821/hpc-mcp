@@ -7,6 +7,7 @@ import shlex
 import shutil
 import uuid
 import fnmatch
+import time
 from dataclasses import replace
 
 from .config import Cluster
@@ -72,7 +73,8 @@ class JobService:
     def job_prepare(self, cluster: str, input_dir: str, script: str,
                     outputs: list[str] | None = None, output_mode: str | None = None,
                     output_exclude: list[str] | None = None, input_exclude: list[str] | None = None,
-                    max_input_bytes: int | None = None) -> dict:
+                    max_input_bytes: int | None = None, project_root: str | None = None,
+                    input_files: list[str] | None = None) -> dict:
         if cluster not in self.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         config = self.clusters[cluster]
@@ -82,6 +84,22 @@ class JobService:
         if source.is_relative_to(self.history.root):
             raise ValueError("input_dir cannot be inside the local state directory")
         script = relative_path(script)
+        project = Path(project_root).expanduser().resolve() if project_root else None
+        if project is not None:
+            if not project.is_dir() or not source.is_relative_to(project):
+                raise ValueError("input_dir must be within an existing project_root")
+            if project.is_relative_to(self.history.root):
+                raise ValueError("project_root cannot be inside the state directory")
+            if outputs is None or not outputs or output_mode == "all":
+                raise ValueError("project tasks require explicit filtered outputs")
+        selected = None
+        if input_files is not None:
+            if not isinstance(input_files, list) or not input_files:
+                raise ValueError("input_files must be a nonempty list of relative file paths")
+            selected = {relative_path(p) for p in input_files} | {script}
+            for path in selected:
+                if not (source / path).is_file():
+                    raise ValueError(f"selected input must be an existing file: {path}")
         policy = replace(config, output_include=config.output_include if outputs is None else outputs,
             output_mode=("filtered" if outputs is not None else config.output_mode)
             if output_mode is None else output_mode,
@@ -102,7 +120,9 @@ class JobService:
                 relative = candidate.relative_to(source).as_posix()
                 if (any(fnmatch.fnmatchcase(relative, p) or fnmatch.fnmatchcase(name, p)
                         for p in policy.input_exclude) or
-                        candidate.resolve() == self.history.root):
+                        candidate.resolve() == self.history.root or name == ".hpc-mcp-sync" or
+                        (selected is not None and relative not in selected and
+                         not any(p.startswith(relative + "/") for p in selected))):
                     skipped.append(name)
                     excluded.append(candidate.relative_to(source).as_posix())
                 elif name.startswith((".hpc-mcp-", ".xn02-")):
@@ -123,6 +143,8 @@ class JobService:
                     re.search(r"^\s*#BSUB\s+-J\s+.*\[", text, re.MULTILINE):
                 raise ValueError("job arrays are not supported in this phase")
             manifest = file_manifest(staged)
+            if selected is not None and selected != {f["path"] for f in manifest}:
+                raise ValueError("selected inputs conflict with input exclusions")
             # Bound preparation size; large-data support will use explicit remote inputs/caching.
             if sum(file["size"] for file in manifest) > policy.max_input_bytes:
                 raise ValueError(f"input snapshot exceeds max_input_bytes={policy.max_input_bytes}")
@@ -136,6 +158,8 @@ class JobService:
                 "internal_prefix": ".hpc-mcp",
                 "job_id": None, "remote_dir": remote, "input_dir": str(source),
                 "snapshot_dir": str(staged), "script": script, "outputs": patterns,
+                "project_root": str(project) if project else None,
+                "input_files": sorted(selected) if selected is not None else None,
                 "output_mode": policy.output_mode, "output_exclude": policy.output_exclude,
                 "input_exclude": policy.input_exclude, "max_input_bytes": policy.max_input_bytes,
                 "manifest": manifest, "excluded": excluded, "sync_state": "not_synced",
@@ -323,7 +347,14 @@ class JobService:
                 transfer_timeout=cluster.transfer_timeout if timeout is None else timeout)
             attempt_id = uuid.uuid4().hex
             root = self.history.root / run_id
-            if destination is not None:
+            project = Path(run["project_root"]) if run.get("project_root") else None
+            inplace = project is not None and (destination is None or
+                Path(destination).expanduser().resolve() == Path(run["input_dir"]))
+            if inplace:
+                target = Path(run["input_dir"])
+                if policy.output_mode != "filtered" or policy.sync_overwrite == "replace":
+                    raise ValueError("return to input_dir requires filtered mode and error/merge overwrite")
+            elif destination is not None:
                 target = Path(destination).expanduser().resolve()
                 source = Path(run["input_dir"])
                 if (target == Path(target.anchor) or target.is_relative_to(source)
@@ -333,20 +364,25 @@ class JobService:
             else:
                 target = root / "outputs" if policy.sync_layout == "direct" \
                     else root / "outputs" / attempt_id
-            if target.exists():
+            if target.exists() and not inplace:
                 if not target.is_dir() or policy.sync_overwrite == "error":
                     raise ValueError("destination exists; choose overwrite='replace' or 'merge'")
                 file_manifest(target)  # Reject destination symlinks before writing into it.
             effective = {"mode": policy.output_mode, "includes": policy.output_include,
                          "excludes": policy.output_exclude, "destination": str(target),
-                         "layout": policy.sync_layout, "overwrite": policy.sync_overwrite,
+                         "layout": "direct" if inplace else policy.sync_layout,
+                         "overwrite": policy.sync_overwrite,
                          "checksum": policy.transfer_checksum, "compress": policy.transfer_compress,
                          "timeout": policy.transfer_timeout}
             # Query before marking output final; failed queries cannot confirm completion.
             status = self.job_status(run_id)
             run = self.history.get(run_id)
-            attempt = root / "sync-attempts" / attempt_id
+            cache = project / ".hpc-mcp-sync" / run_id if project else root / "sync-attempts"
+            if project:
+                self._check_project_cache(project, cache)
+            attempt = cache / attempt_id
             attempt.mkdir(parents=True)
+            effective["staging_dir"] = str(attempt)
             self.history.update(run_id, "sync_started", sync_state="syncing", sync_options=effective)
             result = self.transfer.run(cluster, attempt, run["remote_dir"], download=True,
                 patterns=policy.output_include, mode=policy.output_mode, excludes=policy.output_exclude,
@@ -359,6 +395,15 @@ class JobService:
             files = file_manifest(attempt)
             backup = None
             try:
+                if inplace:
+                    protected = {f["path"] for f in run["manifest"]}
+                    for file in files:
+                        relative = file["path"]
+                        dest = target / relative
+                        if relative in protected or dest.is_symlink() or not dest.resolve().is_relative_to(target):
+                            raise ValueError(f"output would overwrite an input or follow a symlink: {relative}")
+                        if dest.exists() and (not dest.is_file() or policy.sync_overwrite == "error"):
+                            raise ValueError(f"output exists: {relative}; choose overwrite='merge'")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists() and policy.sync_overwrite == "replace":
                     backup = root / "sync-history" / attempt_id
@@ -369,13 +414,65 @@ class JobService:
                     shutil.rmtree(attempt)
                 else:
                     shutil.move(str(attempt), str(target))
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 updated = self.history.update(run_id, "sync_install_failed", sync_state="failed",
                     sync_error=str(exc), output_dir=str(attempt), sync_backup=str(backup) if backup else None)
                 return {"ok": False, "run": updated, "error": str(exc)}
+            if project:
+                self._prune_cache_parents(cache)
             final = status["ok"] and run["state"] in TERMINAL
             updated = self.history.update(run_id, "synced", sync_state="complete" if final else "partial",
                 output_dir=str(target), output_manifest=files, sync_error=None,
                 sync_backup=str(backup) if backup else None)
             return {"ok": True, "run": updated, "final": final,
                     "warning": None if files else "no files matched the configured output patterns"}
+
+    @staticmethod
+    def _check_project_cache(project: Path, cache: Path):
+        if not project.is_dir() or project.resolve() != project:
+            raise ValueError("project_root moved or became a symlink; restore its original path")
+        for path in (project / ".hpc-mcp-sync", cache):
+            if path.is_symlink() or not path.resolve().is_relative_to(project.resolve()):
+                raise ValueError("project sync cache cannot contain symlinks or escape project_root")
+
+    @staticmethod
+    def _prune_cache_parents(cache: Path):
+        for path in (cache, cache.parent):
+            try:
+                path.rmdir()
+            except OSError:
+                break
+
+    def job_cache_cleanup(self, run_id: str, older_than_seconds: int = 86400,
+                          dry_run: bool = True) -> dict:
+        """Remove inactive download attempts only; never inputs, results or remote data."""
+        if type(older_than_seconds) is not int or older_than_seconds < 0 or type(dry_run) is not bool:
+            raise ValueError("older_than_seconds must be nonnegative; dry_run must be boolean")
+        with self.history.lock(run_id):
+            run = self.history.get(run_id)
+            project = Path(run["project_root"]) if run.get("project_root") else None
+            cache = project / ".hpc-mcp-sync" / run_id if project else \
+                self.history.root / run_id / "sync-attempts"
+            if project:
+                self._check_project_cache(project, cache)
+            if cache.is_symlink():
+                raise ValueError("sync cache cannot be a symlink")
+            candidates = []
+            for path in sorted(cache.iterdir()) if cache.exists() else []:
+                if path.is_symlink() or not path.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", path.name):
+                    continue
+                files = file_manifest(path)
+                newest = max([path.stat().st_mtime, *(p.stat().st_mtime for p in path.rglob("*"))])
+                if time.time() - newest >= older_than_seconds:
+                    candidates.append({"path": str(path), "bytes": sum(f["size"] for f in files)})
+            if not dry_run:
+                for candidate in candidates:
+                    shutil.rmtree(candidate["path"])
+                changes = {"last_cache_cleanup": candidates}
+                if run.get("output_dir") in {c["path"] for c in candidates}:
+                    changes["output_dir"] = None
+                self.history.update(run_id, "cache_cleaned", **changes)
+                if project:
+                    self._prune_cache_parents(cache)
+            return {"ok": True, "run_id": run_id, "dry_run": dry_run, "candidates": candidates,
+                    "bytes": sum(c["bytes"] for c in candidates)}

@@ -52,6 +52,12 @@ class ToolSettingsTests(unittest.TestCase):
             prepared = server.tools["job_prepare"]("lab", str(source), "job.sh")
             self.assertEqual(prepared["run"]["outputs"], ["*.chk"])
             self.assertEqual(prepared["run"]["output_mode"], "filtered")
+            project = server.tools["job_prepare"]("lab", str(source), "job.sh",
+                outputs=["result.chk"], project_root=str(root), input_files=["job.sh"])
+            self.assertEqual(project["run"]["project_root"], str(root))
+            cleanup = server.tools["job_cache_cleanup"](project["run"]["run_id"])
+            self.assertTrue(cleanup["dry_run"])
+            self.assertEqual(cleanup["candidates"], [])
             parameters = inspect.signature(server.tools["job_sync"]).parameters
             for name in ("mode", "includes", "excludes", "destination", "layout", "overwrite",
                          "checksum", "compress", "timeout"):

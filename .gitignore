@@ -9,6 +9,7 @@ clusters.toml
 clusters.toml.lock
 .clusters-*
 .hpc-mcp/
+.hpc-mcp-sync/
 # Legacy local state (keep private during migration)
 .xn02/
 

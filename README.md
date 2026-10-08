@@ -10,6 +10,8 @@
 
 确认仓库绝对路径、可写的配置文件路径、固定的本地状态目录，以及用户指定的 SSH 别名、调度器和共享工作目录。已有配置优先复用；缺失的集群信息询问用户，不猜测。
 
+安装 agent 应把源码 checkout／虚拟环境与运行数据分开。配置、历史及输入快照放在用户选定的 agent 数据目录，例如 Codex 使用 `/home/USER/.codex/hpc-mcp/clusters.toml` 和 `/home/USER/.codex/hpc-mcp/state/`。其他客户端按其实际数据目录选择独立的 `hpc-mcp/` 子目录，或复用同一状态目录共享历史。不要默认把这些数据留在源码仓库或项目 A 中；始终在注册命令里指定 `--config`、`--state-dir` 的绝对路径。目录不可写时报告安装限制，不擅自更改客户端权限。
+
 本地需要 Python 3.11+、OpenSSH、rsync，系统为 Linux/macOS；远程需要 Bash、rsync、sha256sum 和对应调度命令。
 
 ```bash
@@ -136,6 +138,40 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 `direct` 将最新结果直接放在 `run_id/outputs/`；`replace` 会先把旧目录归档到 `sync-history/`。`snapshot` 为每次同步创建独立目录。也可传 `destination` 指定其他本地目标；具体冲突及过滤规则见 [接口参考](docs/REFERENCE.md)。
 
 安装验收应报告：客户端是否真正连接、发现了哪些工具、集群检查结果，以及作业提交／结果同步是否实际验证。仅运行 `serve` 没有输出是等待 stdio 请求，不能据此判定握手成功。
+
+### 在原项目目录中提交独立任务与回传
+
+一个输入卡或任务目录对应一次 `job_prepare` 和一个独立远程 `r_*` 目录。agent 自行识别用户选定的任务、生成对应运行脚本，再逐个调用；服务不扫描或自动提交其他输入卡，也不自动生成 Gaussian 脚本。
+
+例如项目根目录为 `/ABS/A`，输入卡为 `/ABS/A/B/test1.gjf`，agent 在同目录准备仅运行该输入的 `test1-job.sh`。用下面的 MCP 参数准备：
+
+```json
+{
+  "cluster": "lab",
+  "project_root": "/ABS/A",
+  "input_dir": "/ABS/A/B",
+  "script": "test1-job.sh",
+  "input_files": ["test1.gjf"],
+  "outputs": ["test1.log", "test1.chk"],
+  "max_input_bytes": 16777216
+}
+```
+
+`input_files` 为精确的相对文件列表，提交脚本自动包含；续算所需的 chk 等依赖必须明确加入。省略它则快照整个任务目录，按输入排除规则过滤。`max_input_bytes` 限制保存的输入体积，超限会拒绝准备；快照不一定小，不能将大型依赖误当作无成本缓存。Gaussian 的 `%chk` 和运行命令必须与所声明的输出路径一致。
+
+提交后使用返回的 `run_id` 查询状态、日志和同步。项目模式必须声明非空的过滤输出；`job_sync(run_id)` 默认将上述结果放回 `/ABS/A/B/test1.log`、`test1.chk`，保留远程相对路径。已有同名结果默认报错；明确使用 `overwrite="merge"` 可覆盖，上传清单中的输入仍受保护。项目目录回传不允许 `replace`，以免归档整个输入目录。多个任务应使用各自的输出名，避免通配符匹配公共 `stdout.log` 引起冲突。
+
+同步暂存位于 `/ABS/A/.hpc-mcp-sync/<run_id>/<attempt_id>/`，成功安装结果后删除暂存并移除空父目录，不额外保存输出副本到 agent 状态目录。失败暂存保留以供排查。原有未指定 `project_root` 的作业继续使用原同步布局；显式 `destination` 也仍可选择其他结果位置。
+
+清理失败／过期暂存可调用 `job_cache_cleanup(run_id, older_than_seconds=86400, dry_run=true)` 预览，再用 `dry_run=false` 执行。CLI 对应：
+
+```bash
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/CONFIG --state-dir /ABS/STATE \
+  cache-cleanup RUN_ID --older-than-seconds 86400
+# 实际清理：在同一命令末尾添加 --apply
+```
+
+清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；MCP 自身不启动后台定时器。下载重试目前会创建新暂存，不承诺利用失败暂存断点续传。
 
 ## 6. 更新与旧版本迁移
 

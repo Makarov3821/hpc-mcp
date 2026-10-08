@@ -29,6 +29,12 @@ def main():
     prepare.add_argument("--output-exclude", action="append")
     prepare.add_argument("--input-exclude", action="append")
     prepare.add_argument("--max-input-bytes", type=int)
+    prepare.add_argument("--project-root", help="Project A; stage downloads here and return to input_dir")
+    prepare.add_argument("--input-file", action="append", help="Exact relative input file; repeat for dependencies")
+    cleanup = sub.add_parser("cache-cleanup", help="Preview/delete inactive sync attempts for one run")
+    cleanup.add_argument("run_id")
+    cleanup.add_argument("--older-than-seconds", type=int, default=86400)
+    cleanup.add_argument("--apply", action="store_true", help="Delete candidates (default: preview)")
     for action in ("submit", "status", "get", "recover", "cancel"):
         sub.add_parser(action).add_argument("run_id")
     sync = sub.add_parser("sync")
@@ -80,7 +86,10 @@ def main():
             jobs = JobService(service.clusters, args.state_dir)
             if args.action == "prepare":
                 data = jobs.job_prepare(args.cluster, args.input_dir, args.script, args.output,
-                    args.output_mode, args.output_exclude, args.input_exclude, args.max_input_bytes)
+                    args.output_mode, args.output_exclude, args.input_exclude, args.max_input_bytes,
+                    args.project_root, args.input_file)
+            elif args.action == "cache-cleanup":
+                data = jobs.job_cache_cleanup(args.run_id, args.older_than_seconds, not args.apply)
             elif args.action == "sync":
                 data = jobs.job_sync(args.run_id, args.mode, args.include, args.exclude,
                     args.destination, args.layout, args.overwrite, args.checksum, args.compress, args.timeout)

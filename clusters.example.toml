@@ -18,7 +18,7 @@ sync_overwrite = "error" # "replace" archives old results; "merge" retains unmat
 transfer_checksum = true
 transfer_compress = false
 max_input_bytes = 1073741824
-input_exclude = [".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".hpc-mcp", ".xn02", "clusters.toml"]
+input_exclude = [".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".hpc-mcp", ".xn02", ".hpc-mcp-sync", "clusters.toml"]
 
 [clusters.slurm_example]
 ssh_host = "my-slurm"

@@ -317,6 +317,90 @@ class JobLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "state directory"):
             self.jobs.job_prepare("lsf", str(self.state), "job.sh")
 
+    def project_task(self, name="test1", outputs=None):
+        (self.source / f"{name}.gjf").write_text("input card")
+        (self.source / "job.sh").write_text(
+            f"#!/bin/bash\nprintf 'result' > {name}.log\nprintf 'checkpoint' > {name}.chk\n")
+        return self.jobs.job_prepare("lsf", str(self.source), "job.sh",
+            outputs=outputs or [f"{name}.log", f"{name}.chk"], project_root=str(self.root),
+            input_files=[f"{name}.gjf"])["run"]
+
+    def test_project_tasks_select_inputs_and_return_beside_cards(self):
+        runs = [self.project_task(name) for name in ("test1", "test2")]
+        self.assertNotEqual(runs[0]["remote_dir"], runs[1]["remote_dir"])
+        for index, run in enumerate(runs, 1):
+            self.assertEqual({f["path"] for f in run["manifest"]}, {"job.sh", f"test{index}.gjf"})
+            self.assertTrue(self.jobs.job_submit(run["run_id"])["ok"])
+            result = self.jobs.job_sync(run["run_id"])
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(Path(result["run"]["output_dir"]), self.source)
+            self.assertEqual((self.source / f"test{index}.chk").read_text(), "checkpoint")
+            self.assertFalse((self.root / ".hpc-mcp-sync").exists())
+            self.assertFalse((self.state / run["run_id"] / "outputs").exists())
+
+    def test_project_return_preserves_inputs_and_handles_output_collisions(self):
+        run = self.project_task()
+        self.jobs.job_submit(run["run_id"])
+        (self.source / "test1.log").write_text("previous result")
+        result = self.jobs.job_sync(run["run_id"])
+        self.assertFalse(result["ok"])
+        self.assertEqual((self.source / "test1.log").read_text(), "previous result")
+        self.assertFalse((self.source / "test1.chk").exists())
+        self.assertTrue(self.jobs.job_sync(run["run_id"], overwrite="merge")["ok"])
+        result = self.jobs.job_sync(run["run_id"], includes=["test1.gjf"], overwrite="merge")
+        self.assertFalse(result["ok"])
+        self.assertIn("overwrite an input", result["error"])
+        self.assertEqual((self.source / "test1.gjf").read_text(), "input card")
+        with self.assertRaises(ValueError):
+            self.jobs.job_sync(run["run_id"], overwrite="replace")
+
+    def test_project_failed_cache_cleanup_is_scoped_and_locked(self):
+        run = self.project_task()
+        self.jobs.job_submit(run["run_id"])
+        self.transfer.fail_download = True
+        failed = self.jobs.job_sync(run["run_id"])
+        attempt = Path(failed["run"]["output_dir"])
+        self.assertTrue(attempt.is_relative_to(self.root / ".hpc-mcp-sync"))
+        (attempt / "partial.log").write_text("partial")
+        preview = self.jobs.job_cache_cleanup(run["run_id"], 0)
+        self.assertEqual(preview["bytes"], 7)
+        self.assertTrue(attempt.exists())
+        with self.jobs.history.lock(run["run_id"]), self.assertRaisesRegex(ValueError, "another"):
+            self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+        self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+        self.assertFalse((self.root / ".hpc-mcp-sync").exists())
+        self.assertTrue(Path(run["snapshot_dir"]).exists())
+        self.assertTrue((self.source / "test1.gjf").exists())
+        self.assertIsNone(self.jobs.job_get(run["run_id"])["run"]["output_dir"])
+
+    def test_project_cache_and_result_symlinks_rejected(self):
+        run = self.project_task(outputs=["nested/result.log"])
+        self.jobs.job_submit(run["run_id"])
+        remote = Path(run["remote_dir"])
+        (remote / "nested").mkdir()
+        (remote / "nested/result.log").write_text("result")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.source / "nested").symlink_to(outside, target_is_directory=True)
+        result = self.jobs.job_sync(run["run_id"])
+        self.assertFalse(result["ok"])
+        self.assertFalse((outside / "result.log").exists())
+        self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+        (self.root / ".hpc-mcp-sync").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.jobs.job_sync(run["run_id"])
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+
+    def test_project_preparation_requires_explicit_output_selection(self):
+        for options in ({}, {"outputs": []}, {"outputs": ["*.log"], "output_mode": "all"}):
+            with self.assertRaisesRegex(ValueError, "explicit filtered outputs"):
+                self.jobs.job_prepare("lsf", str(self.source), "job.sh",
+                                      project_root=str(self.root), **options)
+        with self.assertRaisesRegex(ValueError, "within"):
+            self.jobs.job_prepare("lsf", str(self.source), "job.sh", outputs=["*.log"],
+                                  project_root=str(self.remote))
+
 
 class SchedulerTests(unittest.TestCase):
     def test_submission_ids(self):

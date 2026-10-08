@@ -58,14 +58,18 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     def job_prepare(cluster: str, input_dir: str, script: str,
                     outputs: list[str] | None = None, output_mode: str | None = None,
                     output_exclude: list[str] | None = None, input_exclude: list[str] | None = None,
-                    max_input_bytes: int | None = None) -> dict:
+                    max_input_bytes: int | None = None, project_root: str | None = None,
+                    input_files: list[str] | None = None) -> dict:
         """Create a local immutable input snapshot and reviewable submission plan.
 
         Script is relative to input_dir. Outputs are rsync include patterns.
         Does not upload or execute the script. Rejects symlinks and arrays.
+        project_root: project A; downloads stage there and return to input_dir by default.
+        Project tasks require explicit filtered outputs. input_files selects exact relative
+        files plus the script, instead of the whole directory; include all needed dependencies.
         """
         return jobs.job_prepare(cluster, input_dir, script, outputs, output_mode, output_exclude,
-                                input_exclude, max_input_bytes)
+                                input_exclude, max_input_bytes, project_root, input_files)
 
     @server.tool()
     def job_submit(run_id: str) -> dict:
@@ -106,6 +110,16 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return jobs.job_cancel(run_id)
 
     @server.tool()
+    def job_cache_cleanup(run_id: str, older_than_seconds: int = 86400,
+                          dry_run: bool = True) -> dict:
+        """Preview/delete inactive sync attempts for a run, under its operation lock.
+
+        Never removes snapshots, installed results, history or remote data. Use dry_run=false
+        to apply. Scheduling is external; this tool does not start a background timer.
+        """
+        return jobs.job_cache_cleanup(run_id, older_than_seconds, dry_run)
+
+    @server.tool()
     def job_sync(run_id: str, mode: str | None = None, includes: list[str] | None = None,
                  excludes: list[str] | None = None, destination: str | None = None,
                  layout: str | None = None, overwrite: str | None = None,
@@ -118,6 +132,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         layout: snapshot/direct; overwrite: error/replace/merge. replace archives old data;
         merge overwrites colliding files and retains unmatched files. timeout: 1..86400 seconds.
         Internal receipts and symlinks are always excluded. Running/unknown outputs are partial.
+        Project tasks return to input_dir by default; uploaded inputs cannot be overwritten.
         """
         return jobs.job_sync(run_id, mode, includes, excludes, destination, layout, overwrite,
                              checksum, compress, timeout)
