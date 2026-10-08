@@ -8,11 +8,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from xn02_mcps.config import Cluster
-from xn02_mcps.job_scheduler import parse_job_id, parse_status, query_commands, submit_command
-from xn02_mcps.jobs import JobService
-from xn02_mcps.ssh import CommandResult
-from xn02_mcps.transfer import Transfer
+from hpc_mcp.config import Cluster
+from hpc_mcp.job_scheduler import parse_job_id, parse_status, query_commands, submit_command
+from hpc_mcp.jobs import JobService
+from hpc_mcp.ssh import CommandResult
+from hpc_mcp.transfer import Transfer
 
 
 class LocalSSH:
@@ -26,7 +26,8 @@ class LocalSSH:
         env = dict(os.environ, PATH=str(self.bin_dir) + ":" + os.environ["PATH"])
         result = subprocess.run(["bash", "-e", "-c", command], capture_output=True,
                                 text=True, env=env)
-        if self.lose_response and "mkdir .xn02-submit-lock" in command:
+        if self.lose_response and any(f"mkdir {prefix}-submit-lock" in command
+                                     for prefix in (".hpc-mcp", ".xn02")):
             self.lose_response = False
             return CommandResult(-1, error="timeout")
         return CommandResult(result.returncode, result.stdout, result.stderr)
@@ -50,7 +51,7 @@ class LocalTransfer:
             args = [a[len(prefix):] if a.startswith(prefix) else a for a in args]
             return real_run(args, **kwargs)
 
-        with patch("xn02_mcps.transfer.subprocess.run", side_effect=localize):
+        with patch("hpc_mcp.transfer.subprocess.run", side_effect=localize):
             return Transfer().run(cluster, local, remote, download, patterns, **options)
 
 
@@ -122,7 +123,7 @@ class JobLifecycleTests(unittest.TestCase):
                 output = Path(synced["run"]["output_dir"])
                 self.assertEqual((output / "results/value.txt").read_text(), "42\n")
                 self.assertFalse((output / "data.txt").exists())
-                self.assertFalse((output / ".xn02-response").exists())
+                self.assertFalse((output / ".hpc-mcp-response").exists())
                 self.assertTrue(self.jobs.job_cancel(run["run_id"])["ok"])
                 self.assertTrue(self.jobs.job_submit(run["run_id"])["already_processed"])
         self.assertEqual((self.root / "submissions").read_text(), "2")
@@ -150,6 +151,24 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["run"]["phase"], "submission_unknown")
         self.assertFalse((self.root / "submissions").exists())
+
+    def test_legacy_submission_recovery_and_receipt_filtering(self):
+        run = self.prepare()
+        # Old records do not carry the new receipt protocol field.
+        with self.jobs.history.connect() as db:
+            db.execute("UPDATE runs SET data=json_remove(data, '$.internal_prefix') WHERE run_id=?",
+                       (run["run_id"],))
+        self.transport.lose_response = True
+        result = self.jobs.job_submit(run["run_id"])
+        self.assertEqual(result["run"]["phase"], "submission_unknown")
+        self.assertTrue((Path(run["remote_dir"]) / ".xn02-response").exists())
+        restarted = JobService(self.config, self.state, self.transport, self.transfer)
+        self.assertTrue(restarted.job_recover(run["run_id"])["ok"])
+        self.assertEqual((self.root / "submissions").read_text(), "1")
+        synced = restarted.job_sync(run["run_id"], mode="all")
+        self.assertTrue(synced["ok"], synced)
+        self.assertFalse(any(p.name.startswith((".xn02-", ".hpc-mcp-"))
+                             for p in Path(synced["run"]["output_dir"]).iterdir()))
 
     def test_changed_source_does_not_change_prepared_snapshot(self):
         run = self.prepare()
@@ -245,7 +264,7 @@ class JobLifecycleTests(unittest.TestCase):
         output = Path(synced["run"]["output_dir"])
         self.assertTrue((output / "job.sh").exists())
         self.assertFalse((output / "data.txt").exists())
-        self.assertFalse((output / ".xn02-response").exists())
+        self.assertFalse((output / ".hpc-mcp-response").exists())
 
     def test_sync_overrides_selection_and_direct_layout(self):
         run = self.prepare()

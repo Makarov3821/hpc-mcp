@@ -9,7 +9,7 @@ from dataclasses import asdict
 def create_server(service: ClusterService, jobs: JobService, config: ConfigManager | None = None):
     from mcp.server import MCPServer
 
-    server = MCPServer("xn02-clusters")
+    server = MCPServer("hpc-mcp")
 
     @server.tool()
     def settings_get(cluster: str | None = None) -> dict:

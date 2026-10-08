@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from xn02_mcps.config import Cluster, ConfigManager, load_config
+from hpc_mcp.config import Cluster, ConfigManager, load_config
 
 
 class ConfigManagementTests(unittest.TestCase):

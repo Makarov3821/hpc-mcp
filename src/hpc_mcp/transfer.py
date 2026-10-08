@@ -20,7 +20,8 @@ class Transfer:
         if cluster.transfer_compress if compress is None else compress:
             args.append("--compress")
         if download:
-            args.extend(["--exclude=/.xn02-*/", "--exclude=/.xn02-*"])
+            args.extend(["--exclude=/.hpc-mcp-*/", "--exclude=/.hpc-mcp-*",
+                         "--exclude=/.xn02-*/", "--exclude=/.xn02-*"])
             for pattern in excludes or []:
                 args.append(f"--exclude={pattern}")
             if mode == "filtered":

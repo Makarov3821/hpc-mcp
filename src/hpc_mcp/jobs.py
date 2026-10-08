@@ -43,7 +43,7 @@ def file_manifest(root: Path) -> list[dict]:
 
 
 class JobService:
-    def __init__(self, clusters: dict[str, Cluster], state_dir=".xn02", transport=None,
+    def __init__(self, clusters: dict[str, Cluster], state_dir=".hpc-mcp", transport=None,
                  transfer=None):
         self.clusters = clusters
         self.history = History(state_dir)
@@ -61,6 +61,13 @@ class JobService:
                 or list(cluster.init_scripts) != snapshot["init_scripts"]):
             raise ValueError("cluster destination/environment changed since preparation; restore it")
         return cluster
+
+    def _receipt_prefix(self, run: dict) -> str:
+        # Records made before the rename have no prefix field; keep their remote protocol.
+        prefix = run.get("internal_prefix", ".xn02")
+        if prefix not in (".hpc-mcp", ".xn02"):
+            raise ValueError("unsupported internal receipt prefix")
+        return prefix
 
     def job_prepare(self, cluster: str, input_dir: str, script: str,
                     outputs: list[str] | None = None, output_mode: str | None = None,
@@ -98,7 +105,7 @@ class JobService:
                         candidate.resolve() == self.history.root):
                     skipped.append(name)
                     excluded.append(candidate.relative_to(source).as_posix())
-                elif name.startswith(".xn02-"):
+                elif name.startswith((".hpc-mcp-", ".xn02-")):
                     raise ValueError(f"reserved internal filename: {name}")
                 elif candidate.is_symlink():
                     raise ValueError(f"symlinks are not supported: {candidate.relative_to(source)}")
@@ -126,6 +133,7 @@ class JobService:
                                    "work_root": config.work_root,
                                    "init_scripts": list(config.init_scripts)},
                 "created_at": now(), "phase": "prepared", "state": "unknown",
+                "internal_prefix": ".hpc-mcp",
                 "job_id": None, "remote_dir": remote, "input_dir": str(source),
                 "snapshot_dir": str(staged), "script": script, "outputs": patterns,
                 "output_mode": policy.output_mode, "output_exclude": policy.output_exclude,
@@ -156,6 +164,7 @@ class JobService:
         with self.history.lock(run_id):
             run = self.history.get(run_id)
             cluster = self._cluster(run)
+            prefix = self._receipt_prefix(run)
             if run["phase"] in ("submitted", "rejected"):
                 return {"ok": run["phase"] == "submitted", "run": run,
                         "already_processed": True}
@@ -170,7 +179,7 @@ class JobService:
             initialize = self.transport.run(cluster,
                 f"test -d {shlex.quote(cluster.work_root)}\n"
                 f"test ! -L {qremote}\nmkdir -p -- {qremote}\n"
-                f"test ! -e {qremote}/.xn02-submit-lock")
+                f"test ! -e {qremote}/{prefix}-submit-lock")
             if not initialize.ok:
                 return self._failure(run_id, "upload_failed", initialize)
             uploaded = self.transfer.run(cluster, staged, run["remote_dir"])
@@ -179,19 +188,19 @@ class JobService:
             checksum = "".join(f"{f['sha256']}  {f['path']}\n" for f in run["manifest"])
             # Checksum text is quoted as data, not evaluated by the remote shell.
             verification = self.transport.run(cluster,
-                f"cd -- {qremote}\nprintf '%s' {shlex.quote(checksum)} > .xn02-input.sha256\n"
-                "sha256sum --check .xn02-input.sha256 >/dev/null")
+                f"cd -- {qremote}\nprintf '%s' {shlex.quote(checksum)} > {prefix}-input.sha256\n"
+                f"sha256sum --check {prefix}-input.sha256 >/dev/null")
             if not verification.ok:
                 return self._failure(run_id, "upload_failed", verification)
             self.history.update(run_id, "submission_intent", phase="submitting")
             # Atomic remote lock prohibits retries even if the client loses the response.
             result = self.transport.run(cluster,
-                f"cd -- {qremote}\nmkdir .xn02-submit-lock\nset +e\n"
-                f"{run['command']} > .xn02-response.tmp 2> .xn02-submit.stderr\n"
-                "xn02_submit_rc=$?\nmv .xn02-response.tmp .xn02-response\n"
-                "printf '%s\\n' \"$xn02_submit_rc\" > .xn02-exit.tmp\n"
-                "mv .xn02-exit.tmp .xn02-exit\ncat .xn02-response\n"
-                "cat .xn02-submit.stderr >&2\nexit \"$xn02_submit_rc\"")
+                f"cd -- {qremote}\nmkdir {prefix}-submit-lock\nset +e\n"
+                f"{run['command']} > {prefix}-response.tmp 2> {prefix}-submit.stderr\n"
+                f"hpc_mcp_submit_rc=$?\nmv {prefix}-response.tmp {prefix}-response\n"
+                f"printf '%s\\n' \"$hpc_mcp_submit_rc\" > {prefix}-exit.tmp\n"
+                f"mv {prefix}-exit.tmp {prefix}-exit\ncat {prefix}-response\n"
+                f"cat {prefix}-submit.stderr >&2\nexit \"$hpc_mcp_submit_rc\"")
             if result.error is not None:
                 return self._failure(run_id, "submission_unknown", result)
             return self._accept_response(run, result.returncode, result.stdout, result.stderr)
@@ -229,10 +238,11 @@ class JobService:
     def _recover(self, run: dict, cluster: Cluster) -> dict:
         if run["phase"] not in ("submitting", "submission_unknown"):
             return {"ok": True, "run": run, "message": "no ambiguous submission to recover"}
+        prefix = self._receipt_prefix(run)
         result = self.transport.run(cluster,
             f"cd -- {shlex.quote(run['remote_dir'])}\n"
-            "test -f .xn02-exit\ncat .xn02-exit\ncat .xn02-response\n"
-            "cat .xn02-submit.stderr >&2")
+            f"test -f {prefix}-exit\ncat {prefix}-exit\ncat {prefix}-response\n"
+            f"cat {prefix}-submit.stderr >&2")
         if not result.ok:
             return self._failure(run["run_id"], "submission_unknown", result)
         code, separator, output = result.stdout.partition("\n")

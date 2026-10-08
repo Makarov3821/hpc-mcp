@@ -13,8 +13,8 @@ from .service import ClusterService
 
 def main():
     parser = argparse.ArgumentParser(description="Inspect LSF/Slurm clusters over SSH")
-    parser.add_argument("--config", default=os.environ.get("XN02_CONFIG", "clusters.toml"))
-    parser.add_argument("--state-dir", default=os.environ.get("XN02_STATE", ".xn02"))
+    parser.add_argument("--config", default=os.environ.get("HPC_MCP_CONFIG", "clusters.toml"))
+    parser.add_argument("--state-dir", default=os.environ.get("HPC_MCP_STATE", ".hpc-mcp"))
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
     for action in ("check", "info"):

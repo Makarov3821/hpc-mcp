@@ -7,10 +7,10 @@ from types import ModuleType
 import unittest
 from unittest.mock import patch
 
-from xn02_mcps.config import ConfigManager
-from xn02_mcps.jobs import JobService
-from xn02_mcps.server import create_server
-from xn02_mcps.service import ClusterService
+from hpc_mcp.config import ConfigManager
+from hpc_mcp.jobs import JobService
+from hpc_mcp.server import create_server
+from hpc_mcp.service import ClusterService
 
 
 class RecordingServer:

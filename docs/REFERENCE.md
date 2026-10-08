@@ -6,7 +6,7 @@
 `None`/参数省略表示继承；空列表表示明确不包含／不排除任何模式。所有生效的同步参数保存到 `sync_options` 和事件历史。
 
 `settings_get()` 返回完整默认设置模板和运行时路径；`settings_get(cluster)` 返回有效设置；`cluster_configure(cluster, settings)` 接受部分 JSON 设置并原子保存 TOML，立即更新服务中的配置。
-服务启动时的配置路径和状态路径分别由 `--config`/`XN02_CONFIG`、`--state-dir`/`XN02_STATE` 设置，不能在运行中移动历史数据库。
+服务启动时的配置路径和状态路径分别由 `--config`/`HPC_MCP_CONFIG`、`--state-dir`/`HPC_MCP_STATE` 设置，不能在运行中移动历史数据库。
 
 ## 集群设置全表
 
@@ -28,7 +28,7 @@
 | `transfer_checksum` | `true` | rsync 使用内容校验比较文件 |
 | `transfer_compress` | `false` | rsync 传输压缩 |
 | `max_input_bytes` | `1073741824`，正整数 bytes | 准备时允许的输入总大小 |
-| `input_exclude` | `.git,.venv,__pycache__,.aws,.ssh,.codex,.agents,.xn02,clusters.toml` 数组 | 输入排除，按文件名或相对路径 glob 匹配 |
+| `input_exclude` | `.git,.venv,__pycache__,.aws,.ssh,.codex,.agents,.hpc-mcp,.xn02,clusters.toml` 数组 | 输入排除，按文件名或相对路径 glob 匹配 |
 
 修改 `ssh_host`、调度器、工作根目录或初始化文件不会迁移旧作业，旧作业会拒绝使用不一致的连接配置。
 其他设置可更新后立即使用；从文件手动修改设置需重启当前 MCP 进程。
@@ -59,7 +59,7 @@
 - `merge`：成功下载后合并目标，覆盖同名文件、保留没有下载的旧文件。`output_manifest` 只描述本次下载文件，不包含保留的旧文件。
 
 输入目录、输入快照、历史数据库与文件系统根不能用作覆盖目标。目标中的符号链接被拒绝。
-内部 `.xn02-*` 回执始终被排除；符号链接不下载，特殊文件不作为结果文件支持。这些是接口边界，不能通过 include 模式关闭。
+内部 `.hpc-mcp-*` 和旧版 `.xn02-*` 回执始终被排除；符号链接不下载，特殊文件不作为结果文件支持。这些是接口边界，不能通过 include 模式关闭。
 失败下载保留 staging；跨尝试续传和输出大小上限尚未实现。全部下载可能很大，应根据作业结果选择模式和超时。
 
 `final=true` 需要本次成功查询到终止状态且传输成功；运行中或查询失败返回 partial。它表示所选文件传输完成，不保证应用计算正确或覆盖执行目录之外的输出。
@@ -68,13 +68,13 @@
 ## CLI 对应选项
 
 ```bash
-xn02 --config /abs/clusters.toml config-get lab
-xn02 --config /abs/clusters.toml config-set lab '{"sync_layout":"direct","sync_overwrite":"replace"}'
-xn02 prepare lab /abs/input job.sh --output-mode filtered --output '*.chk' --output '*.log' \
+hpc-mcp --config /abs/clusters.toml config-get lab
+hpc-mcp --config /abs/clusters.toml config-set lab '{"sync_layout":"direct","sync_overwrite":"replace"}'
+hpc-mcp prepare lab /abs/input job.sh --output-mode filtered --output '*.chk' --output '*.log' \
   --output-exclude '*.tmp' --input-exclude '*.bak' --max-input-bytes 2147483648
-xn02 sync RUN_ID --mode all --exclude '*.tmp' --destination /abs/results \
+hpc-mcp sync RUN_ID --mode all --exclude '*.tmp' --destination /abs/results \
   --overwrite replace --checksum --compress --timeout 600
-xn02 sync RUN_ID --mode filtered --include 'results/***' --layout direct \
+hpc-mcp sync RUN_ID --mode filtered --include 'results/***' --layout direct \
   --overwrite merge --no-checksum --no-compress
 ```
 

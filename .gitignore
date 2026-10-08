@@ -8,6 +8,8 @@ dist/
 clusters.toml
 clusters.toml.lock
 .clusters-*
+.hpc-mcp/
+# Legacy local state (keep private during migration)
 .xn02/
 
 # Local environment, credentials, and agent configuration

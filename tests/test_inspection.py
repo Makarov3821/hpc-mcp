@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from xn02_mcps.config import Cluster, load_config
-from xn02_mcps.schedulers import parse_lsf, parse_slurm
-from xn02_mcps.service import ClusterService
-from xn02_mcps.ssh import CommandResult, SSHTransport
+from hpc_mcp.config import Cluster, load_config
+from hpc_mcp.schedulers import parse_lsf, parse_slurm
+from hpc_mcp.service import ClusterService
+from hpc_mcp.ssh import CommandResult, SSHTransport
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -186,7 +186,7 @@ class TransportTests(unittest.TestCase):
             script = b"printf 'login banner\\n'\n" + kwargs.pop("input")
             return real_run(["bash", "-s"], input=script, **kwargs)
 
-        with patch("xn02_mcps.ssh.subprocess.run", side_effect=local_shell):
+        with patch("hpc_mcp.ssh.subprocess.run", side_effect=local_shell):
             result = SSHTransport().run(self.cluster, "printf 'payload\\n'; exit 7")
         self.assertEqual(result.stdout, "payload\n")
         self.assertEqual(result.returncode, 7)
@@ -197,8 +197,8 @@ class TransportTests(unittest.TestCase):
 
     def test_initialization_failure(self):
         real_run = subprocess.run
-        cluster = Cluster("a", "alias", "lsf", "/jobs", ("/nonexistent-xn02-init",))
-        with patch("xn02_mcps.ssh.subprocess.run",
+        cluster = Cluster("a", "alias", "lsf", "/jobs", ("/nonexistent-hpc-mcp-init",))
+        with patch("hpc_mcp.ssh.subprocess.run",
                    side_effect=lambda argv, **kw: real_run(["bash", "-s"], **kw)):
             result = SSHTransport().run(cluster, "printf should-not-run")
         self.assertFalse(result.ok)
@@ -207,7 +207,7 @@ class TransportTests(unittest.TestCase):
     def test_timeout_and_unavailable_ssh(self):
         for exception, expected in [(subprocess.TimeoutExpired("ssh", 1), "timeout"),
                                     (FileNotFoundError("ssh"), "ssh_unavailable")]:
-            with self.subTest(expected=expected), patch("xn02_mcps.ssh.subprocess.run",
+            with self.subTest(expected=expected), patch("hpc_mcp.ssh.subprocess.run",
                                                       side_effect=exception):
                 self.assertEqual(SSHTransport().run(self.cluster, "true").error, expected)
 
@@ -216,7 +216,7 @@ class TransportTests(unittest.TestCase):
             kwargs["stdout"].write(b"x" * 1_048_577)
             return subprocess.CompletedProcess(argv, 0)
 
-        with patch("xn02_mcps.ssh.subprocess.run", side_effect=oversized):
+        with patch("hpc_mcp.ssh.subprocess.run", side_effect=oversized):
             result = SSHTransport().run(self.cluster, "true")
         self.assertFalse(result.ok)
         self.assertEqual(result.error, "output_limit")

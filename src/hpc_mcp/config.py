@@ -29,7 +29,7 @@ class Cluster:
     transfer_compress: bool = False
     max_input_bytes: int = 1024 ** 3
     input_exclude: list[str] = field(default_factory=lambda: [
-        ".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".xn02",
+        ".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".hpc-mcp", ".xn02",
         "clusters.toml",
     ])
     ssh_output_limit: int = 1024 ** 2

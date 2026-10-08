@@ -36,13 +36,13 @@ def ssh_options(cluster: Cluster) -> list[str]:
 
 class SSHTransport:
     def run(self, cluster: Cluster, command: str) -> CommandResult:
-        token = "XN02_" + uuid.uuid4().hex
+        token = "HPC_MCP_" + uuid.uuid4().hex
         begin, end = token + "_BEGIN", token + "_END"
         setup = "\n".join(f". {shlex.quote(p)}" for p in cluster.init_scripts)
         script = (
             f"set -e\n{setup}\nexport LC_ALL=C\nset +e\n"
             f"printf '%s\\n' {begin}\n( set -e\n{command}\n)\n"
-            f"xn02_rc=$?\nprintf '%s\\n' {end}\nexit \"$xn02_rc\"\n"
+            f"hpc_mcp_rc=$?\nprintf '%s\\n' {end}\nexit \"$hpc_mcp_rc\"\n"
         )
         argv = ["ssh", "-T", *ssh_options(cluster), cluster.ssh_host, "bash -s"]
         # File-backed capture prevents large output from being buffered in memory.

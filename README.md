@@ -1,4 +1,4 @@
-# xn02-mcps：Agent 安装与接入指南
+# hpc-mcp：Agent 安装与接入指南
 
 项目仓库：[Makarov3821/hpc-mcp](https://github.com/Makarov3821/hpc-mcp)。
 
@@ -30,7 +30,7 @@ git clone git@github.com:Makarov3821/hpc-mcp.git
 cd hpc-mcp
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[mcp]'
-.venv/bin/xn02 --help
+.venv/bin/hpc-mcp --help
 ```
 
 未配置 GitHub SSH 身份时可使用 `git clone https://github.com/Makarov3821/hpc-mcp.git`。这与登录计算集群所需的 SSH 配置分别管理。
@@ -39,16 +39,18 @@ python3 -m venv .venv
 
 后续所有示例中的 `/ABS/REPO`、`/ABS/STATE`、`YOUR_SSH_ALIAS` 和路径均替换为实际值。MCP 启动命令必须使用绝对路径，避免依赖当前目录、激活的虚拟环境或 `PYTHONPATH`。
 
+发行包、CLI 命令和 MCP 注册名统一为 `hpc-mcp`，Python 模块名为 `hpc_mcp`。CLI 默认读取当前目录的 `clusters.toml`，状态存放在 `.hpc-mcp/`；也可使用 `HPC_MCP_CONFIG`、`HPC_MCP_STATE` 环境变量或对应命令行参数指定路径。注册客户端时显式指定固定的绝对路径。
+
 ## 3. 配置集群
 
 已有 `clusters.toml` 时先读取。新增或更新配置可以使用 CLI 的 JSON 设置接口：
 
 ```bash
-/ABS/REPO/.venv/bin/xn02 --config /ABS/REPO/clusters.toml config-set lab \
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/REPO/clusters.toml config-set lab \
   '{"ssh_host":"YOUR_SSH_ALIAS","scheduler":"lsf","work_root":"/shared/home/user/jobs","output_mode":"all"}'
-/ABS/REPO/.venv/bin/xn02 --config /ABS/REPO/clusters.toml config-get lab
-/ABS/REPO/.venv/bin/xn02 --config /ABS/REPO/clusters.toml check lab
-/ABS/REPO/.venv/bin/xn02 --config /ABS/REPO/clusters.toml info lab
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/REPO/clusters.toml config-get lab
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/REPO/clusters.toml check lab
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/REPO/clusters.toml info lab
 ```
 
 Slurm 使用 `"scheduler":"slurm"`。命令只在登录环境初始化后可用时，设置 `init_scripts` 为远程初始化文件的绝对路径。该文件会被执行，不能放入作业提交等副作用。
@@ -66,7 +68,7 @@ Slurm 使用 `"scheduler":"slurm"`。命令只在登录环境初始化后可用�
 可以使用官方 CLI 注册命令：
 
 ```bash
-codex mcp add xn02-clusters -- /ABS/REPO/.venv/bin/xn02 \
+codex mcp add hpc-mcp -- /ABS/REPO/.venv/bin/hpc-mcp \
   --config /ABS/REPO/clusters.toml --state-dir /ABS/STATE serve
 codex mcp list
 ```
@@ -74,8 +76,8 @@ codex mcp list
 如需指定超时，可在用户或项目 Codex 配置的相应条目中设置：
 
 ```toml
-[mcp_servers.xn02-clusters]
-command = "/ABS/REPO/.venv/bin/xn02"
+[mcp_servers.hpc-mcp]
+command = "/ABS/REPO/.venv/bin/hpc-mcp"
 args = ["--config", "/ABS/REPO/clusters.toml", "--state-dir", "/ABS/STATE", "serve"]
 startup_timeout_sec = 20
 tool_timeout_sec = 1200
@@ -91,9 +93,9 @@ tool_timeout_sec = 1200
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "xn02-clusters": {
+    "hpc-mcp": {
       "type": "local",
-      "command": ["/ABS/REPO/.venv/bin/xn02", "--config", "/ABS/REPO/clusters.toml", "--state-dir", "/ABS/STATE", "serve"],
+      "command": ["/ABS/REPO/.venv/bin/hpc-mcp", "--config", "/ABS/REPO/clusters.toml", "--state-dir", "/ABS/STATE", "serve"],
       "enabled": true,
       "timeout": 20000
     }
@@ -135,6 +137,42 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 安装验收应报告：客户端是否真正连接、发现了哪些工具、集群检查结果，以及作业提交／结果同步是否实际验证。仅运行 `serve` 没有输出是等待 stdio 请求，不能据此判定握手成功。
 
+## 6. 更新与旧版本迁移
+
+停止客户端中的本服务，备份 `clusters.toml` 和**整个状态目录**（包含数据库、输入快照、输出及归档），再在仓库根目录更新：
+
+```bash
+git status --short
+# 如有本地代码修改，先保存并处理；工作区干净后继续。
+git pull --ff-only
+.venv/bin/python -m pip install --upgrade -e '.[mcp]'
+.venv/bin/hpc-mcp --help
+```
+
+更新不会主动覆盖集群配置或清空作业历史。若快进更新失败，报告分支分歧并处理，不自动重置工作区。重启客户端，重新检查 MCP 工具、`cluster_check` 和 `job_list`；更新不会自动提交测试作业。
+
+从 `xn02-mcps` 迁移时，在旧虚拟环境中先执行 `.venv/bin/python -m pip uninstall xn02-mcps`，再按上面的命令安装。旧命令 `xn02`、模块 `xn02_mcps` 和环境变量 `XN02_CONFIG`／`XN02_STATE` 已改为新名称，需要同步修改自己的启动脚本和客户端配置。
+
+Codex 的旧条目可用 `codex mcp remove xn02-clusters` 移除，再按第 4 节注册 `hpc-mcp`；OpenCode 删除旧 `mcp["xn02-clusters"]` 条目并添加新条目，保留其他服务。注册名前先查看现有配置，避免留下两个同时运行的副本。
+
+**已有 `.xn02/` 状态目录继续通过 `--state-dir /ABS/REPO/.xn02` 使用。** 不要仅为了改名移动状态目录：数据库记录包含输入快照和输出的绝对路径。旧远程回执仍能恢复和过滤，新作业使用 `.hpc-mcp-*` 回执。集群名和 SSH 别名（例如 `xn02`）属于用户的连接配置，无需改名。若仓库本身也搬过目录，应保留旧快照路径可访问，或先完成路径迁移再验收旧作业。
+
+## 7. 卸载与数据清理
+
+先停止客户端中的本服务，解除注册，再卸载 Python 包：
+
+```bash
+codex mcp remove hpc-mcp
+codex mcp list
+/ABS/REPO/.venv/bin/python -m pip uninstall hpc-mcp
+```
+
+只执行实际使用的客户端步骤。OpenCode 用户删除对应配置作用域中的 `mcp["hpc-mcp"]` 条目；手动配置 Codex 的用户删除对应 `[mcp_servers.hpc-mcp]` 表。重启客户端，确认服务不再出现；迁移遗留的旧条目也应移除。
+
+包卸载保留 `clusters.toml`、本地状态目录、显式指定的同步目标，以及集群上的作业和文件。卸载不会取消远程作业：需要取消时，应在解除注册前调用 `job_cancel` 或使用调度器命令，并确认结果。
+
+完全移除时，先核对配置里的本地状态路径和各集群 `work_root`，备份需要保留的结果，再删除已确认归本项目使用的本地配置、状态、同步目标、专用虚拟环境和 checkout。远程只清理确认属于本项目且作业已结束的 `r_*` 目录，不删除共享 `work_root` 或 SSH 密钥／配置。不要把卸载当成授权清空计算结果；agent 应按用户指定的保留或清理范围执行。
+
 ## 开发与当前边界
 
 ```bash
@@ -142,7 +180,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 python3 -m compileall -q src tests
 ```
 
-源码在 `src/xn02_mcps/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m xn02_mcps` 使用，适合依赖安装前的诊断。
+源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
 用户已在真实 LSF 上完成提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；Slurm 实际作业及 MCP SDK 握手仍需目标环境验收，依赖锁文件尚未生成。
 
