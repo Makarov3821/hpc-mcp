@@ -182,7 +182,9 @@ class TemplateService:
             raise ValueError("existing output would be snapshotted as input; use an explicit input_files list")
         prepared = self.jobs.job_prepare(cluster, input_dir, script_name, outputs, "filtered",
             output_exclude, input_exclude, max_input_bytes, project_root, input_files,
-            rendered["script"], context, input_overrides, input_sources, original_inputs, application_context)
+            rendered["script"], context, input_overrides, input_sources, original_inputs, application_context,
+            {"scheduler": rendered["scheduler"], "spec": deepcopy(rendered["spec"]),
+             "warnings": rendered["warnings"], "notes": rendered["notes"]})
         prepared["rendered"] = rendered
         return prepared
 

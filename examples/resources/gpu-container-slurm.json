@@ -1,0 +1,9 @@
+{
+  "command": ["python3", "train.py"],
+  "resources": {"nodes": 1, "tasks": 1, "cpus": 4, "slurm_gres": "gpu:a100:1", "memory_mb": 8192, "memory_scope": "per_node"},
+  "container": {"runtime": "apptainer", "image": "/remote/images/trusted.sif", "gpu": "nv", "binds": [{"source": "/remote/datasets", "destination": "/data", "read_only": true}]},
+  "scratch": {"root": "/remote/scratch", "environment_variable": "TMPDIR", "cleanup": true},
+  "remote_dependencies": [{"path": "/remote/datasets", "kind": "directory"}],
+  "stdout": "train.log",
+  "output_directories": ["results"]
+}

@@ -173,11 +173,11 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 # 实际清理：在同一命令末尾添加 --apply
 ```
 
-清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；MCP 自身不启动后台定时器。下载重试目前会创建新暂存，不承诺利用失败暂存断点续传。
+清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；MCP 自身不启动后台定时器。相同选择规则、目标和远程文件指纹下，失败下载可复用暂存续传；规则或文件变化时创建新尝试。
 
 ## 6. 生成单任务脚本与复用模板
 
-`script_generate(scheduler, spec)` 只返回可审查的 Bash 脚本。`spec.command` 是程序和参数组成的列表，可指定 `stdin`／`stdout`／`stderr` 相对路径、`environment` 和计算节点使用的远程绝对 `init_scripts`。`resources` 支持队列／分区、CPU、内存和时间；完整字段见 [接口参考](docs/REFERENCE.md)。当前生成单节点、单任务的共享内存脚本。
+`script_generate(scheduler, spec)` 只返回可审查的 Bash 脚本。`spec.command` 是程序和参数组成的列表，可指定 `stdin`／`stdout`／`stderr` 相对路径、`environment` 和计算节点使用的远程绝对 `init_scripts`。`resources` 支持队列／分区、CPU、内存和时间；完整字段见 [接口参考](docs/REFERENCE.md)。默认生成单任务共享内存脚本，也支持显式 MPI 布局、GPU 和容器；每个计划仍对应一个独立调度作业。
 
 例如直接准备 Gaussian 作业，脚本只写入 agent 状态目录中的输入快照，原目录不新增脚本：
 
@@ -215,7 +215,23 @@ MCP 对应 `template_import(name, definition)`、`template_plan(...)`、`templat
 
 `template_plan` 会创建本地输入快照，但不上传或提交；`plan_id` 就是 `run_id`。计划固定模板版本、参数、最终脚本和输入清单，之后编辑模板或原输入不会改变它。`template_run` 只执行该计划，重复调用遵循已有提交防重与回执恢复规则；重新准备或重跑计算应创建新计划。状态、日志、回传和缓存清理继续使用同一个 `run_id`。
 
-Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%nprocshared`、内存、运行时间以及计算节点的 g16 环境；续算 chk 等依赖必须加入模板输入列表。Slurm 内存区分 `job` 与 `per_cpu`；LSF 要求明确使用 `lsf_reservation`，其预留作用范围由站点配置决定，不表示硬内存限制。原 Python 提交入口和任意 Shell 脚本自动导入仍留待后续阶段。
+Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%nprocshared`、内存、运行时间以及计算节点的 g16 环境；续算 chk 等依赖必须加入模板输入列表。Slurm 内存区分 `job` 与 `per_cpu`；LSF 要求明确使用 `lsf_reservation`，其预留作用范围由站点配置决定，不表示硬内存限制。普通 Bash 脚本可先只读分析；复杂 Python 入口与任意 Shell 自动导入仍未实现。
+
+### 分析现有脚本与准备 MPI／GPU 作业
+
+先调用 `script_inspect(script_path)`；远程脚本传 cluster 和远程绝对路径。也可运行：
+
+```bash
+/ABS/REPO/.venv/bin/hpc-mcp script-inspect /ABS/REPO/examples/inspection/slurm.sh
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/CONFIG script-inspect /remote/job.sh --cluster lab
+/ABS/REPO/.venv/bin/hpc-mcp script-generate slurm /ABS/REPO/examples/resources/mpi-slurm.json
+```
+
+分析不会执行源码，返回 SHA、行号、字面资源、环境、路径及未解析项。template_draft 只是待审草案；agent 核对资源、原初始化顺序、完整输入依赖和输出后，才调用 template_import。变量、分支、多个命令和 Python 入口不自动转换，继续用 job_prepare 保存原脚本。`used-scripts/` 的 Python 提交入口仍处于研究阶段。
+
+MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_node 和 launcher；OpenMP 线程在 environment 明确设置。Slurm 可指定精确均匀节点布局；LSF 按总 slots 和每 host 的 ptile 表达，不声称精确多节点数。GPU 使用 scheduler 专用 slurm_gres／slurm_gpus_per_task／lsf_gpu，容器支持可信远程 Apptainer／Singularity 镜像、显式挂载和单节点 scratch。镜像及软件不随任务上传；scratch 不改变输出 cwd，不自动回传中间文件。
+
+[资源示例](examples/resources/) 中的远程路径、GPU 型号、启动器参数都是占位，agent 应先取得用户的站点设置，核对生成脚本与输入清单再准备／提交；MPI 主机发现、CPU binding、容器 ABI 和共享存储需要目标环境验证。参数和兼容限制见 [接口参考](docs/REFERENCE.md)。
 
 ### Gaussian 单任务与应用结果
 
@@ -323,9 +339,9 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-当前 110 项测试全部通过，包含 Gaussian、增量续传、同步进程恢复和清理保护；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、33 个工具及其参数发现、结构化结果、配置更新、脚本生成、模板保存／计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+当前 128 项测试全部通过，包含 Gaussian、增量续传、同步进程恢复和清理保护；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、34 个工具及其参数发现、结构化结果、配置更新、脚本生成、模板保存／计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
-当前支持普通批处理脚本、Gaussian 单任务辅助和带预检／续传的同步；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
+当前支持普通批处理脚本只读分析、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 
 ## 许可证
 

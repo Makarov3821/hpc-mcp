@@ -55,11 +55,34 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         settings.pop("name")
         return {"ok": True, "settings": settings, "state_dir": str(jobs.history.root),
                 "script_resources": asdict(Resources()),
+                "script_execution": {"launcher": {"kind": "srun", "arguments": []},
+                    "container": {"runtime": "apptainer", "image": "/remote/trusted.sif", "binds": [], "gpu": None},
+                    "scratch": {"root": "/remote/scratch", "environment_variable": "TMPDIR", "cleanup": True},
+                    "remote_dependencies": []},
+                "script_inspection": {"max_bytes": 262144, "max_bytes_limit": 1048576,
+                                      "cluster": None, "requires_review": True},
+                "script_execution_choices": {"launchers": ["srun", "mpirun", "mpiexec"],
+                    "container_runtimes": ["apptainer", "singularity"],
+                    "container_gpu": [None, "nv", "rocm"],
+                    "dependency_kinds": ["file", "directory", "executable"],
+                    "memory_scopes": ["job", "per_node", "per_cpu", "lsf_reservation"]},
                 "template_parameter_types": ["string", "integer", "boolean"],
                 "updates": {"cached_check": updates.cached(), "check_tool": "update_check",
                             "plan_tool": "update_plan", "max_age_seconds": 86400,
                             "timeout": 10, "force": False},
                 "config_path": str(config.path) if config else None}
+
+    @server.tool()
+    def script_inspect(script_path: str, cluster: str | None = None,
+                       max_bytes: int = 262144) -> dict[str, Any]:
+        """Read-only Bash/sh analysis with SHA, line evidence and review-only template draft.
+
+        Local regular UTF-8 file by default; cluster selects a remote absolute file read over SSH.
+        max_bytes 1..1048576, also bounded by SSH output budget. Never executes source or imports
+        dependencies. Dynamic/unsupported Shell remains unresolved; draft requires explicit review.
+        """
+        from .script_inspection import ScriptInspector
+        return ScriptInspector(service).inspect(script_path, cluster, max_bytes)
 
     @server.tool()
     def gaussian_inspect(input_file: str) -> dict[str, Any]:
@@ -158,12 +181,14 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
 
     @server.tool()
     def script_generate(scheduler: str, spec: dict) -> dict[str, Any]:
-        """Preview a single-node/single-task Bash script; no files, execution or submission.
+        """Preview a structured Bash batch script; no files, execution or submission.
 
         spec: command argv (required), resources, environment, compute init_scripts,
-        relative stdin/stdout/stderr. resources: cpus, queue, memory_mb, memory_scope,
+        relative stdin/stdout/stderr; optional launcher, container, scratch, remote_dependencies.
+        resources: cpus (per task), tasks, nodes, tasks_per_node, slurm_gres,
+        slurm_gpus_per_task, slurm_constraint, lsf_gpu, queue, memory_mb, memory_scope,
         time_minutes, account/qos (Slurm), lsf_resource_requirement (LSF).
-        Slurm memory_scope: job/per_cpu; LSF: lsf_reservation (scope is site-dependent).
+        Slurm memory_scope: job (single node)/per_node/per_cpu; LSF: lsf_reservation (scope is site-dependent).
         init_scripts are trusted remote absolute paths. Commands/values are shell-quoted.
         """
         return generate_script(scheduler, spec)

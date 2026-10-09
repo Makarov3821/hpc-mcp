@@ -1,0 +1,5 @@
+{
+  "command": ["python3", "train.py"],
+  "resources": {"cpus": 4, "lsf_gpu": "num=1/host:mode=exclusive_process:gmodel=A100"},
+  "stdout": "train.log"
+}

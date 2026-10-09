@@ -84,7 +84,8 @@ class JobService:
                     input_overrides: dict[str, str] | None = None,
                     input_sources: dict[str, str] | None = None,
                     original_inputs: dict[str, str] | None = None,
-                    application_context: dict | None = None) -> dict:
+                    application_context: dict | None = None,
+                    generation_context: dict | None = None) -> dict:
         if cluster not in self.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         config = self.clusters[cluster]
@@ -243,6 +244,8 @@ class JobService:
             }
             if generated_script is not None:
                 run["generated_script"] = generated_script
+            if generation_context is not None:
+                run["generation"] = generation_context
             if template_context is not None:
                 run["template"] = template_context
             if original_inputs:

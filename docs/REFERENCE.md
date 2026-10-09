@@ -1,8 +1,8 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；33 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；34 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
 
-## 单任务脚本生成
+## 结构化脚本生成
 
 `script_generate(scheduler, spec)` 纯预览，不执行命令或写文件。`spec` 接受以下字段，未知字段拒绝：
 
@@ -14,21 +14,52 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 | `init_scripts` | 计算节点上可信初始化文件的绝对路径数组，默认空数组 |
 | `stdin`／`stdout`／`stderr` | 可选的执行目录内相对文件路径；不允许绝对路径或 `..` |
 | `output_directories` | 可选相对目录数组，在执行时 mkdir；默认空数组 |
+| `launcher` | 可选 `{kind, arguments?}`，kind 为 srun/mpirun/mpiexec，arguments 为受支持的启动器选项 argv |
+| `container` | 可选可信远程镜像、运行时及挂载；见下节 |
+| `scratch` | 可选单节点临时目录策略；见下节 |
+| `remote_dependencies` | `{path, kind}` 数组，远程绝对路径；kind 为 file/directory/executable，运行前检查，不上传 |
 
 | 资源字段 | 语义 |
 | --- | --- |
-| `cpus` | 正整数；Slurm 单 task 的 `--cpus-per-task`，LSF `-n` 并限制单 host |
+| `cpus` | 默认 1，每任务 CPU；Slurm `--cpus-per-task`，LSF 总 slots = tasks × cpus |
+| `tasks` | 默认 1，MPI 进程数；大于 1 必须显式声明 launcher |
+| `nodes` | 默认 null；Slurm 省略按 1 生成，精确节点数不得超过 tasks；LSF 仅接受 null/1，不假装 ptile 能指定精确多节点数 |
+| `tasks_per_node` | 可选正整数；Slurm 当前要求均匀布局 nodes × tasks_per_node = tasks；LSF 按 cpus 换算为 span[ptile=slots]，全任务同 host 时用 span[hosts=1] |
+| `slurm_gres` | Slurm 原生 `gpu[:MODEL]:COUNT`，按节点申请；与 GPUs per task 互斥 |
+| `slurm_gpus_per_task` | Slurm 原生 `[MODEL:]COUNT`，须使用 srun；站点需要支持相应 TRES 配置 |
+| `slurm_constraint` | Slurm 节点 feature 表达式，限制为单行字面量字符集 |
+| `lsf_gpu` | LSF 原生冒号分隔字符串，必须包含 num=N[/task\|host]；支持字段取决于站点版本，不转换为 Slurm |
 | `queue` | Slurm partition／LSF queue；省略使用调度器默认值 |
-| `memory_mb`／`memory_scope` | 必须一起指定；Slurm `job` 使用单节点 `--mem`，`per_cpu` 使用 `--mem-per-cpu`；LSF 仅接受 `lsf_reservation`，生成显式 MB 的 `rusage[mem=...]` |
+| `memory_mb`／`memory_scope` | 必须一起指定；Slurm `job` 仅单节点，`per_node` 使用 `--mem`，`per_cpu` 使用 `--mem-per-cpu`；LSF 仅接受 `lsf_reservation`，生成显式 MB 的 `rusage[mem=...]` |
 | `time_minutes` | 正整数分钟，渲染为调度器对应的时间格式 |
 | `account`／`qos` | Slurm 专用标识，不自动转换为 LSF 参数 |
 | `lsf_resource_requirement` | 可选 LSF 原生资源表达式，由用户核对站点支持，不自动转换到 Slurm |
 
-当前只生成单节点共享内存作业，不生成 MPI/GPU/数组配置。LSF 内存预留按 slot 或 job 的作用范围由站点配置决定；预留不等于硬限制。[Slurm sbatch](https://slurm.schedmd.com/sbatch.html)、[LSF 资源要求](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=o-r)。
+默认保持单任务共享内存行为；可显式配置 MPI/GPU，不生成数组配置。LSF 内存预留按 slot 或 job 的作用范围由站点配置决定；预留不等于硬限制。[Slurm sbatch](https://slurm.schedmd.com/sbatch.html)、[LSF 资源要求](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=o-r)。
 
-脚本使用 `set -euo pipefail`、引用的 source/export 和最后的 `exec`，保留程序退出码。argv、环境值、重定向路径使用 Shell 引用；若用户显式选择 `bash -c` 等解释器，其内部代码仍由用户负责。初始化先执行，随后设置声明的环境变量；这些 compute 初始化与集群登录环境的 `init_scripts` 是分别配置的。声明的 stdout/stderr 父目录在远程执行时创建，stdin 与 stdout/stderr 不可同名。
+脚本使用 `set -euo pipefail`、引用的 source/export 和最后的 `exec`（启用 scratch 时由 EXIT trap 清理并保留原退出码），保留程序退出码。argv、环境值、重定向路径使用 Shell 引用；若用户显式选择 `bash -c` 等解释器，其内部代码仍由用户负责。初始化先执行，随后设置声明的环境变量；这些 compute 初始化与集群登录环境的 `init_scripts` 是分别配置的。声明的 stdout/stderr 父目录在远程执行时创建，stdin 与 stdout/stderr 不可同名。
 
-`job_prepare_generated(cluster, input_dir, spec, outputs, project_root?, input_files?, script_name?, output_exclude?, input_exclude?, max_input_bytes?)` 把生成脚本只写入状态目录的输入快照，并返回原有 prepared run 与 `rendered`。默认 `script_name="hpc-mcp-job.sh"`，限定为非保留的文件名，不覆盖原输入。同样要求明确输出过滤；显式输入列表自动包含脚本和 stdin，其他依赖仍需声明。`job_submit` 才上传／执行。CLI `script-generate SCHEDULER SPEC.json`、`prepare-generated CLUSTER INPUT_DIR SPEC.json --output PATTERN ...`。
+`job_prepare_generated(cluster, input_dir, spec, outputs, project_root?, input_files?, script_name?, output_exclude?, input_exclude?, max_input_bytes?)` 把生成脚本只写入状态目录的输入快照，并返回原有 prepared run 与 `rendered`。历史中的 generation 保存有效资源、执行配置和警告，即使后续清理快照仍可核对当时的设置。默认 `script_name="hpc-mcp-job.sh"`，限定为非保留的文件名，不覆盖原输入。同样要求明确输出过滤；显式输入列表自动包含脚本和 stdin，其他依赖仍需声明。`job_submit` 才上传／执行。CLI `script-generate SCHEDULER SPEC.json`、`prepare-generated CLUSTER INPUT_DIR SPEC.json --output PATTERN ...`。
+
+## MPI、容器与临时空间
+
+`launcher.kind="srun"` 仅用于 Slurm，自动加 `--ntasks` 和 `--cpus-per-task`；`mpirun`／`mpiexec` 自动加 `-np`／`-n`。任务／CPU／节点计数不允许被 arguments 覆盖。srun 转发 mpi、cpu-bind、distribution、hint、label、unbuffered、exclusive、kill-on-bad-exit 选项；MPI 转发 map-by、bind-to、rank-by、mca、host、hostfile、oversubscribe 及部分 MPICH 的 bootstrap/bind-to/hostfile/genv/env 选项。不接受任意别名或多应用 config。`--map-by` 中 PE 须匹配 cpus，ppr:N:node 须匹配显式 tasks_per_node。
+
+OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超过 cpus。LSF slots 的 CPU 作用范围与 MPI host/bootstrap/binding 必须按实际站点配置；不会自动从分配槽位推导正确主机文件。[LSF span 语义](https://www.ibm.com/docs/SSWRJV_10.1.0/lsf_admin/span_string.html)、[Slurm GPU 资源](https://slurm.schedmd.com/gres.html)。LSF 自定义 resource requirement 不能再包含 span；声明 lsf_gpu 时也不能叠加 GPU 资源表达式。Gaussian 辅助不支持 MPI/Linda，通用生成器新增 MPI 不改变该限制。
+
+`container` 字段：runtime 默认 apptainer，可选 singularity；image 必填远程绝对文件路径，运行前检查可读；binds 默认为空数组，每项为 `{source, destination, read_only=true}`，路径必须绝对且不能含逗号／冒号；gpu 可选 nv/rocm，须同时请求调度器 GPU。启动顺序为 launcher → container exec → command。运行时必须支持 --no-eval；声明环境通过 APPTAINERENV_／SINGULARITYENV_ 显式传入，避免镜像默认值覆盖及二次求值。自动以 rw 挂载 run cwd 并设置容器 cwd，保持相对输入／输出位置。镜像、初始化脚本和挂载内容是可信远程依赖，既不复制到输入快照，也不保证每个节点的可用性、镜像不可变或 MPI ABI 兼容。[Apptainer exec](https://apptainer.org/docs/user/latest/cli/apptainer_exec.html)、[环境与求值](https://apptainer.org/docs/user/latest/environment_and_metadata.html)、[SingularityCE exec](https://docs.sylabs.io/guides/4.6/user-guide/cli/singularity_exec.html)。
+
+`scratch` 必填 root（远程绝对目录）；environment_variable 默认 TMPDIR，也可显式指定 GAUSS_SCRDIR 等非保留变量；cleanup 默认 true。执行时 mktemp 新建唯一私有目录，结束时只删除该新目录并保留程序退出码；cleanup=false 保留供诊断。scratch 不改变 cwd，也不自动回传其中数据；持久结果必须由程序写到 run 目录。容器中显式挂载 scratch，并传入对应变量。只支持能确定单 host 的布局；节点突然离线、SIGKILL 或磁盘故障可能留下目录。生成器不探测／创建远程 root，实际权限由运行环境决定。
+
+## 已有脚本只读分析
+
+`script_inspect(script_path, cluster=null, max_bytes=262144)`：默认读取本地 UTF-8 普通文件，拒绝文件符号链接；指定 cluster 时通过已配置 SSH 读取一个远程绝对路径，禁止遍历路径，不跟随文件链接，不递归取依赖。max_bytes 为 1..1048576，远程还受 ssh_output_limit 限制。配置中的可信登录 init_scripts 仍按正常 SSH 规则初始化，分析的源脚本不执行。
+
+返回 source（位置、来源、大小、SHA-256）、带源码行号／原文／certainty 的 directives、evidence、commands、paths、unresolved、extracted_spec，以及 template_draft。Slurm 第一条可执行语句之后的指令标为 inactive；LSF stdin 模式的后置指令继续分析，重复资源采用后项，所有原始证据保留。调度指令内容是字面量，变量不会被展开；run 名、cwd 和调度器日志由 job_submit 覆盖。[Slurm sbatch](https://slurm.schedmd.com/sbatch.html)、[LSF 作业脚本](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=bsub-write-job-scripts)。
+
+静态子集支持常用资源、内存／整分钟时间、source 绝对路径、export、mkdir -p、单条 argv 命令及 stdin/stdout/stderr 重定向。命令替换、变量、分支、循环、多行、追加／复杂描述符、多个命令、未知选项及 Python 入口保持 unresolved；引用中的动态符号也保守拒绝转换。没有 shebang 时解释器为 inferred，LSF -n 的 MPI／共享内存含义也必须核对。候选 argv 路径仅 inferred，不自动确定依赖。
+
+仅无未解析项、单调度器、单静态命令并有明确程序输出时返回通过生成器验证的模板草案；requires_review 始终 true，不证明 Shell 语义完全等价。agent 核对初始化顺序、资源、所有输入、输出和路径后，才能将 draft 作为 definition 传给 template_import；报告本身不是 definition。不改写原脚本，复杂场景仍可用 job_prepare 保存原文。CLI：`script-inspect FILE [--cluster NAME] [--max-bytes N]`。示例见 `examples/inspection/`。
 
 ## 模板与固定计划
 

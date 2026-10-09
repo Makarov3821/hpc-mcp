@@ -53,7 +53,7 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "cluster_info", "job_prepare", "job_submit", "job_list", "job_get",
                             "job_status", "job_recover", "job_logs", "job_cancel", "job_sync",
                             "job_cache_cleanup",
-                            "script_generate", "job_prepare_generated", "template_import",
+                            "script_inspect", "script_generate", "job_prepare_generated", "template_import",
                             "template_list", "template_get", "template_plan", "template_run",
                             "update_check", "update_plan", "gaussian_inspect", "gaussian_prepare", "gaussian_result",
                             "job_sync_preview", "job_sync_start", "job_sync_operation",
@@ -88,6 +88,11 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         cleanup = await client.call_tool("job_cache_cleanup", {"run_id": run["run_id"]})
                         self.assertFalse(cleanup.is_error)
                         self.assertTrue(cleanup.structured_content["dry_run"])
+                        inspected_script = await client.call_tool("script_inspect", {"script_path": str(source / "job.sh")})
+                        self.assertFalse(inspected_script.is_error)
+                        self.assertTrue(inspected_script.structured_content["requires_review"])
+                        self.assertIn("max_bytes", tools["script_inspect"].input_schema["properties"])
+                        self.assertIn("tasks", settings.structured_content["script_resources"])
                         preview = await client.call_tool("script_generate", {
                             "scheduler": "lsf", "spec": {"command": ["true"]}})
                         self.assertFalse(preview.is_error)

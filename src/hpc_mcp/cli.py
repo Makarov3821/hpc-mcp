@@ -25,6 +25,10 @@ def main():
         update.add_argument("--force", action="store_true")
         update.add_argument("--max-age-seconds", type=int, default=86400)
         update.add_argument("--timeout", type=int, default=10)
+    inspect = sub.add_parser("script-inspect", help="Read-only Bash inspection and review-only draft")
+    inspect.add_argument("script_path")
+    inspect.add_argument("--cluster")
+    inspect.add_argument("--max-bytes", type=int, default=262144)
     sub.add_parser("gaussian-inspect").add_argument("input_file")
     gaussian = sub.add_parser("gaussian-prepare")
     gaussian.add_argument("cluster")
@@ -144,6 +148,12 @@ def main():
     logs.add_argument("--lines", type=int, default=100)
     args = parser.parse_args()
     try:
+        if args.action == "script-inspect":
+            from .script_inspection import ScriptInspector
+            inspector_service = ClusterService(load_config(args.config)) if args.cluster else None
+            data = ScriptInspector(inspector_service).inspect(args.script_path, args.cluster, args.max_bytes)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action == "gaussian-inspect":
             from .gaussian import gaussian_inspect
             print(json.dumps(gaussian_inspect(args.input_file), ensure_ascii=False, indent=2))

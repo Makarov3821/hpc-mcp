@@ -25,6 +25,13 @@ class GaussianTests(unittest.TestCase):
         return self.gaussian.prepare("lsf", str(self.card), str(self.fixture.root), self.spec,
                                      ["test.log", "test.chk"], **options)["run"]
 
+    def test_generic_mpi_extension_does_not_enable_gaussian_linda(self):
+        self.spec["resources"].update(tasks=2)
+        self.spec["launcher"] = {"kind": "mpirun"}
+        with self.assertRaisesRegex(ValueError, "MPI/Linda"):
+            self.prepare()
+        self.assertEqual(self.jobs.job_list()["runs"], [])
+
     def test_inspect_units_link1_and_unresolved_directives(self):
         self.card.write_text(self.card.read_text() + "--Link1--\n%oldchk=test.chk\n%chk=next.chk\n%mem=2MW\n%rwf=$SCRATCH/x\n# geom=allcheck\n\n")
         result = gaussian_inspect(str(self.card))["analysis"]

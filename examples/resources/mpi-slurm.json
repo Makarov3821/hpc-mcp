@@ -1,0 +1,7 @@
+{
+  "command": ["/remote/software/solver", "input.dat"],
+  "resources": {"nodes": 2, "tasks": 4, "tasks_per_node": 2, "cpus": 4, "memory_mb": 8192, "memory_scope": "per_node", "time_minutes": 10},
+  "launcher": {"kind": "srun", "arguments": ["--mpi=pmix", "--cpu-bind=cores"]},
+  "environment": {"OMP_NUM_THREADS": "4"},
+  "stdout": "solver.log"
+}

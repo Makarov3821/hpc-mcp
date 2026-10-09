@@ -142,6 +142,9 @@ class GaussianService:
             raise ValueError("unknown cluster")
         from .scripts import script_generate
         script_generate(self.jobs.clusters[cluster].scheduler, spec)
+        resource_spec = spec.get("resources", {})
+        if resource_spec.get("tasks", 1) != 1 or resource_spec.get("nodes") not in (None, 1) or spec.get("launcher"):
+            raise ValueError("Gaussian assistance supports shared-memory single-task runs; MPI/Linda needs a separate adapter")
         if dependencies is not None and not isinstance(dependencies, list):
             raise ValueError("dependencies must be a list of relative files")
         changes = {} if changes is None else changes

@@ -1,0 +1,7 @@
+{
+  "command": ["/remote/software/solver", "input.dat"],
+  "resources": {"tasks": 4, "tasks_per_node": 2, "cpus": 4, "time_minutes": 10},
+  "launcher": {"kind": "mpirun", "arguments": ["--map-by", "slot:PE=4", "--bind-to", "core"]},
+  "environment": {"OMP_NUM_THREADS": "4"},
+  "stdout": "solver.log"
+}
