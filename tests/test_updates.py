@@ -91,6 +91,21 @@ class UpdateTests(unittest.TestCase):
             self.assertFalse(plan["ok"])
             self.assertEqual(plan["commands"], [])
 
+    def test_live_coordinator_blocks_upgrades_until_stopped(self):
+        from hpc_mcp.jobs import JobService
+        from hpc_mcp.monitor import MonitorService
+        monitor = MonitorService(JobService({}, self.updates.root))
+        with monitor.history.connect() as db:
+            db.execute('INSERT INTO monitor_runtime VALUES (1,?)', (json.dumps({'state': 'running'}),))
+        with self.remote():
+            plan = self.updates.plan()
+        self.assertFalse(plan['ok'])
+        self.assertTrue(any('coordinator' in blocker for blocker in plan['blockers']))
+        with monitor.history.connect() as db:
+            db.execute('UPDATE monitor_runtime SET data=? WHERE id=1', (json.dumps({'state': 'stopped'}),))
+        with self.remote():
+            self.assertTrue(self.updates.plan(force=True)['ok'])
+
     def test_identical_and_invalid_network_response(self):
         with patch("hpc_mcp.updates._request", return_value={"sha": "a" * 40}):
             result = self.updates.plan()

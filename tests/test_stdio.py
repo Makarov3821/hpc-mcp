@@ -22,7 +22,7 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 root = Path(directory)
                 config = root / "agent-data" / "clusters.toml"
                 config.parent.mkdir()
-                config.write_text("[clusters]\n")
+                # First connection must work before a configuration file exists.
                 state = root / "agent-data" / "state"
                 from hpc_mcp.updates import REPOSITORY, installation
                 import json
@@ -58,6 +58,10 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "update_check", "update_plan", "gaussian_inspect", "gaussian_prepare", "gaussian_result",
                             "job_sync_preview", "job_sync_start", "job_sync_operation",
                             "job_storage_cleanup", "input_cache_cleanup", "job_remote_cleanup",
+                            "monitor_watch", "monitor_unwatch", "monitor_start", "monitor_stop",
+                            "monitor_status", "monitor_notifications",
+                            "cluster_probe", "onboarding_report", "profile_draft", "profile_confirm",
+                            "profile_get", "profile_list", "profile_plan", "profile_validate",
                         })
                         properties = tools["job_prepare"].input_schema["properties"]
                         self.assertIn("project_root", properties)
@@ -92,7 +96,30 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(inspected_script.is_error)
                         self.assertTrue(inspected_script.structured_content["requires_review"])
                         self.assertIn("max_bytes", tools["script_inspect"].input_schema["properties"])
+                        report_id = inspected_script.structured_content['report_id']
+                        self.assertEqual(tools['cluster_probe'].input_schema['properties']['module_avail']['default'], True)
+                        draft = await client.call_tool('profile_draft', {'name': 'protocol-profile', 'cluster': 'lab',
+                            'application': 'test', 'definition': {'scheduler': 'lsf',
+                                'spec': {'command': ['true']}, 'input_files': ['test.gjf'], 'outputs': ['test.log']},
+                            'report_ids': [report_id]})
+                        self.assertFalse(draft.is_error, draft.content)
+                        profile = draft.structured_content['profile']
+                        confirmed = await client.call_tool('profile_confirm', {'profile_id': profile['profile_id'],
+                            'review_token': profile['review_token'], 'confirmation_note': 'Offline test user confirmed all displayed settings'})
+                        self.assertFalse(confirmed.is_error, confirmed.content)
+                        profile_plan = await client.call_tool('profile_plan', {'input_dir': str(source),
+                            'cluster': 'lab', 'application': 'test', 'project_root': str(project)})
+                        self.assertFalse(profile_plan.is_error, profile_plan.content)
+                        self.assertEqual(profile_plan.structured_content['run']['profile']['validation'], 'unverified')
+                        validation = await client.call_tool('profile_validate', {'profile_id': profile['profile_id'], 'command': ['true']})
+                        self.assertFalse(validation.is_error, validation.content)
+                        self.assertEqual(validation.structured_content['run']['phase'], 'prepared')
                         self.assertIn("tasks", settings.structured_content["script_resources"])
+                        monitor_status = await client.call_tool("monitor_status", {})
+                        self.assertFalse(monitor_status.is_error)
+                        self.assertFalse(monitor_status.structured_content["runtime"]["alive"])
+                        self.assertEqual(monitor_status.structured_content["total"], 0)
+                        self.assertIn("sync_options", tools["monitor_watch"].input_schema["properties"])
                         preview = await client.call_tool("script_generate", {
                             "scheduler": "lsf", "spec": {"command": ["true"]}})
                         self.assertFalse(preview.is_error)
@@ -129,5 +156,9 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(template.structured_content["template"]["version"], 1)
                         template_run = await restarted.call_tool("job_get", {"run_id": template_plan_id})
                         self.assertEqual(template_run.structured_content["run"]["template"]["version"], 1)
+                        saved_profile = await restarted.call_tool('profile_get', {'profile_id': profile['profile_id']})
+                        self.assertTrue(saved_profile.structured_content['profile']['is_default'])
+                        saved_report = await restarted.call_tool('onboarding_report', {'report_id': report_id})
+                        self.assertEqual(saved_report.structured_content['report']['source'], inspected_script.structured_content['source'])
                 self.assertFalse((cwd / ".hpc-mcp").exists())
                 self.assertFalse((project / ".hpc-mcp-sync").exists())

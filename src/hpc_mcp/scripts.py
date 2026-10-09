@@ -59,7 +59,7 @@ def script_generate(scheduler: str, spec: dict) -> dict:
     """Return a script and effective settings without reading or writing input files."""
     if scheduler not in ("lsf", "slurm"):
         raise ValueError("scheduler must be lsf or slurm")
-    allowed = {"command", "resources", "environment", "init_scripts", "stdin", "stdout", "stderr", "output_directories", "launcher", "container", "scratch", "remote_dependencies"}
+    allowed = {"command", "resources", "environment", "init_scripts", "setup_steps", "stdin", "stdout", "stderr", "output_directories", "launcher", "container", "scratch", "remote_dependencies"}
     if not isinstance(spec, dict) or set(spec) - allowed:
         raise ValueError("unknown script spec settings")
     command = spec.get("command")
@@ -164,7 +164,11 @@ def script_generate(scheduler: str, spec: dict) -> dict:
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise ValueError("invalid environment variable name")
         exports.append(f"export {name}={shlex.quote(line_value(value, 'environment value'))}")
-    omp = environment.get("OMP_NUM_THREADS")
+    from .environment_setup import render_setup
+    ordered_setup, step_environment = render_setup(spec.get('setup_steps', []))
+    if ordered_setup and (spec.get('init_scripts') or environment):
+        raise ValueError('setup_steps cannot be combined with init_scripts or environment; express the complete order as steps')
+    omp = step_environment.get("OMP_NUM_THREADS", environment.get("OMP_NUM_THREADS"))
     if omp is not None and omp.isdecimal() and (int(omp) < 1 or int(omp) > resources.cpus):
         raise ValueError("OMP_NUM_THREADS cannot exceed allocated cpus per task")
     init_scripts = spec.get("init_scripts", [])
@@ -176,6 +180,8 @@ def script_generate(scheduler: str, spec: dict) -> dict:
             raise ValueError("compute init_scripts must use remote absolute paths")
         sources.append("source -- " + shlex.quote(path))
     from .execution import execution
+    if step_environment and spec.get('container'):
+        raise ValueError('container environment uses explicit environment/init_scripts; ordered export steps are unsupported')
     setup, invocation, execution_spec, execution_warnings, has_scratch = execution(spec, scheduler, resources, command)
     warnings.extend(execution_warnings)
     invocation = ("" if has_scratch else "exec -- ") + invocation
@@ -196,11 +202,11 @@ def script_generate(scheduler: str, spec: dict) -> dict:
         raise ValueError("output_directories must be a list of relative directories")
     parents = sorted(set(parents) | {relative_path(p) for p in requested})
     directories = ["mkdir -p -- " + shlex.join(parents)] if parents else []
-    lines = ["#!/bin/bash", *directives, "", "set -euo pipefail", *sources, *exports,
+    lines = ["#!/bin/bash", *directives, "", "set -euo pipefail", *sources, *exports, *ordered_setup,
              *directories, *setup, invocation, ""]
     return {"ok": True, "scheduler": scheduler, "script": "\n".join(lines),
             "spec": {"command": command, "resources": asdict(resources),
-                     "environment": environment, "init_scripts": init_scripts, "output_directories": requested, **execution_spec, **paths},
+                     "environment": environment, "init_scripts": init_scripts, "setup_steps": spec.get('setup_steps', []), "output_directories": requested, **execution_spec, **paths},
             "warnings": warnings,
             "notes": ["cpus means CPUs per task; tasks means process count. Arrays are not generated. OpenMP environment is explicit.",
                       "Run identity, cwd and scheduler logs are assigned by job_submit.",

@@ -73,12 +73,21 @@ class InspectionTests(unittest.TestCase):
                      f'cat <<EOF\n#BSUB -n 8\ntouch {marker}\nEOF',
                      'app \\\n --argument > result.log',
                      'cd child\napp > result.log',
-                     'app > result.log\nexport X=value',
-                     'export X=value\nsource /opt/init.sh\napp > result.log'):
+                     'app > result.log\nexport X=value'):
             report = self.inspect('#BSUB -n 1\n' + body + '\n')
             self.assertIsNone(report['template_draft'], body)
             self.assertTrue(report['unresolved'])
             self.assertFalse(marker.exists())
+
+    def test_module_and_interleaved_setup_preserves_order(self):
+        report = self.inspect('#BSUB -n 2\nexport X=value\nsource /opt/init.sh\n'
+                              'module purge\nmodule load openmpi/4.1\napp > result.log\n')
+        self.assertFalse(report['unresolved'])
+        steps = report['template_draft']['spec']['setup_steps']
+        self.assertEqual([s['kind'] for s in steps], ['export', 'source', 'module_purge', 'module_load'])
+        validate_definition(report['template_draft'])
+        self.assertFalse(report['extracted_spec']['environment'])
+        self.assertIsNone(self.inspect('#BSUB -n 1\nmodule load $MPI\napp > result.log')['template_draft'])
 
     def test_no_fabricated_outputs_or_interpreter_conversion(self):
         for text in ('#SBATCH -c 1\napp input.gjf\n',
@@ -107,7 +116,8 @@ class InspectionTests(unittest.TestCase):
         link.symlink_to(self.path)
         with self.assertRaises(ValueError):
             ScriptInspector().inspect(str(link))
-        result = subprocess.run([sys.executable, '-m', 'hpc_mcp', 'script-inspect', str(self.path)],
+        result = subprocess.run([sys.executable, '-m', 'hpc_mcp', '--state-dir', str(self.root / 'state'),
+                                 'script-inspect', str(self.path)],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)['template_draft'])

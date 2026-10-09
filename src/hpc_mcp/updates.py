@@ -158,11 +158,15 @@ class UpdateService:
         if database.exists():
             try:
                 with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+                    if db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitor_runtime'").fetchone():
+                        runtime = db.execute("SELECT data FROM monitor_runtime WHERE id=1").fetchone()
+                        if runtime and json.loads(runtime[0]).get("state") in ("starting", "running", "stopping"):
+                            blockers.append("Stop the coordinator with monitor_stop and wait for stopped before updating; it survives MCP shutdown.")
                     if db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='operations'").fetchone():
                         active = db.execute("SELECT id FROM operations WHERE json_extract(data,'$.state') IN ('queued','running') LIMIT 1").fetchone()
                         if active:
                             blockers.append(f"Finish or inspect sync operation {active[0]} before updating; workers survive MCP shutdown.")
-            except sqlite3.Error as error:
+            except (sqlite3.Error, ValueError, TypeError, AttributeError) as error:
                 blockers.append(f"Cannot verify sync operation state: {error}")
         commands = []
         if not blockers and check.get("update_available"):

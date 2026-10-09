@@ -1,0 +1,5 @@
+{
+  "sync_cache_age_seconds": 86400,
+  "storage_categories": ["sync_history", "old_outputs"],
+  "storage_age_seconds": 604800
+}

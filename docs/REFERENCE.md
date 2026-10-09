@@ -1,6 +1,43 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；34 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；48 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+
+## 新集群引导与应用运行配置
+
+`serve` 可在指定配置文件不存在时启动空服务，不自动写入占位集群。配置、报告与运行数据继续由绝对 `--config`／`--state-dir` 定位。
+
+| MCP 工具 | 参数与行为 |
+| --- | --- |
+| `cluster_probe` | 必填 ssh_host；scheduler=null、work_root=null、paths=null、module_avail=true、max_module_bytes=32768、timeout=30、cluster=null、queue_details=false。SSH 别名校验与普通连接一致；timeout 1..300，模块输出限制 1024..262144 字节，paths 最多 64 个明确的远程绝对路径。cluster 指定时复用既有可信登录初始化与连接参数，SSH 目的地必须一致。返回持久 report_id、候选调度器、队列、模块候选、路径检查与待补信息；不修改配置。 |
+| `onboarding_report(report_id)` | 读取并校验不可变探测／脚本／验证报告，不访问 SSH。 |
+| `profile_draft(name, cluster, application, definition, report_ids=null)` | 保存不可变待审版本，definition 使用 template_import 的 schema；report_ids 最多 32 个，关联来源、校验值、缺失项和未解析项。名称／应用标识 1..100 字符，字母数字开头，其余允许点、下划线、连字符。返回 review_token；尚不可用于准备任务。 |
+| `profile_confirm(profile_id, review_token, confirmation_note, make_default=true)` | 用户确认后保存 exact draft 的确认记录并创建固定 version=1 的内部模板；note 为非空、最多 4096 字符，记录用户对配置和未解析项的确认。默认绑定 cluster/application；重复确认不创建模板新版本。不能验证或提交作业。 |
+| `profile_get(profile_id)` | 返回定义、确认、来源和最近验证证据；本地集群设置变化标记 requires_recheck 与 stale。远程软件变化仍需显式复验。 |
+| `profile_list(cluster=null, application=null, limit=50, offset=0)` | 分页列出各版本及默认绑定，limit 1..500，offset 非负。 |
+| `profile_plan(input_dir, profile_id=null, cluster=null, application=null, parameters=null, project_root=null)` | 指定 profile_id，或选择 cluster/application 的已确认默认配置。准备一项任务，固定定义与参数；历史附 profile_id、版本、review_token、来源和验证范围。配置发生变化需重新建档确认；不提交。 |
+| `profile_validate(profile_id, command=null, parameters=null, run_id=null)` | command 必须是用户核对的小型 argv，parameters 为模板绑定；只准备 probe。传 run_id 时不能再传 command／parameters：查询已准备验证作业的状态，成功终态后同步日志并记录证据。 |
+
+探测只使用登录信息、调度命令定位、队列查询和具体路径 test；软件发现最多执行一次 `module avail`。没有模块系统、查询失败、超限或信息不完整均保持未知；不递归列目录、扫描安装位置、自动加载候选模块或执行用户提交器。`queue_details=true` 附加固定的 `bqueues -l`／`scontrol show partition` 原始诊断证据，不推断账户／QOS 权限或推荐核数。未知站点策略请用户补充。
+
+配置关联和确认保存在状态 SQLite，报告校验且不可变。手动配置可不带报告；附带的报告需要与目标 SSH 目的地一致。confirmation_note 是 agent 对外部用户确认的记录，MCP 无法独立证明用户确实回复；agent 不得自行填充确认。内部模板名为 `profile.<profile_id>`，准备始终固定版本 1；改变定义创建新 profile 草案，不改写已有版本。
+
+验证使用临时本地 marker 创建独立输入快照，临时源目录随准备结束清理，长期数据仍在 agent 状态目录。作业按有效资源、初始化、启动器和容器运行小型 command，不上传应用输入；替换应用重定向为 validation.log／validation.err。环境需要 Bash、cat、hostname；scratch 中的持久输出仍写在 run 目录。先检查脚本和资源，授权后通过 job_submit 提交；网络响应不明沿用 job_recover。
+
+检查只接受该 profile 的专用 probe，不接受普通历史作业作验证依据。要求新鲜成功终态、稳定同步、日志 SHA 和每个声明任务的 marker／hostname 证据；日志单文件限 1 MiB、总量 2 MiB。失败保持 failed，排队／状态未知／同步失败保持 pending；分别保存用户确认与验证状态。验证覆盖该命令、参数与资源布局的提交、共享目录、初始化和回传，不能替代应用科学结果判定。参数与最近验证的绑定不一致时，新任务记为 unverified；本地集群设置变化拒绝复用旧确认。重新验证远程软件需显式操作，不隐式扫描或执行版本探测。
+
+CLI 对应 `cluster-probe`、`onboarding-report`、`profile-draft`、`profile-confirm`、`profile-get`、`profile-list`、`profile-plan`、`profile-validate`，均可用 `--help` 获取完整参数。例如先调整示例中的站点路径和资源，再运行：
+
+```bash
+hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
+  profile-draft gaussian lab gaussian examples/profiles/gaussian-lsf.json --report-id REPORT_ID
+hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
+  profile-confirm PROFILE_ID REVIEW_TOKEN --confirmation-note '用户确认了资源、环境和待核对项'
+hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
+  profile-validate PROFILE_ID --command '["bash","-c","command -v g16"]' \
+  --parameters '{"input":"test.gjf","stem":"test"}'
+```
+
+最后一条只准备验证作业；command -v 仅验证命令可见性，完整程序运行和版本需用户指定相应小测试。以本次返回的 run_id 单独提交，完成后用 `profile-validate PROFILE_ID --run-id RUN_ID` 记录证据。
 
 ## 结构化脚本生成
 
@@ -12,6 +49,7 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 | `resources` | 下表中的资源设置，默认 CPU 为 1 |
 | `environment` | 环境变量名到字符串值的对象，默认空对象 |
 | `init_scripts` | 计算节点上可信初始化文件的绝对路径数组，默认空数组 |
+| `setup_steps` | 默认空数组；按顺序执行 source／module_load／module_purge／export，非空时不能同时设置 init_scripts 或 environment |
 | `stdin`／`stdout`／`stderr` | 可选的执行目录内相对文件路径；不允许绝对路径或 `..` |
 | `output_directories` | 可选相对目录数组，在执行时 mkdir；默认空数组 |
 | `launcher` | 可选 `{kind, arguments?}`，kind 为 srun/mpirun/mpiexec，arguments 为受支持的启动器选项 argv |
@@ -39,6 +77,8 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 
 脚本使用 `set -euo pipefail`、引用的 source/export 和最后的 `exec`（启用 scratch 时由 EXIT trap 清理并保留原退出码），保留程序退出码。argv、环境值、重定向路径使用 Shell 引用；若用户显式选择 `bash -c` 等解释器，其内部代码仍由用户负责。初始化先执行，随后设置声明的环境变量；这些 compute 初始化与集群登录环境的 `init_scripts` 是分别配置的。声明的 stdout/stderr 父目录在远程执行时创建，stdin 与 stdout/stderr 不可同名。
 
+`setup_steps` 最多 128 项，逐项引用且不改变原顺序：`{kind:"source",path:"/absolute/init.sh"}`、`{kind:"module_load",modules:["openmpi/4.1"]}`、`{kind:"module_purge"}`、`{kind:"export",name:"OMP_NUM_THREADS",value:"4"}`。module_load 最多 32 个字面模块名，不接受选项／命令替换；不自动初始化模块系统。该设置只在作业执行时运行；source 是用户确认的可信代码。声明的整数 OMP_NUM_THREADS 仍受 CPU 校验；容器暂不支持 ordered export steps，容器环境继续使用 environment/init_scripts。
+
 `job_prepare_generated(cluster, input_dir, spec, outputs, project_root?, input_files?, script_name?, output_exclude?, input_exclude?, max_input_bytes?)` 把生成脚本只写入状态目录的输入快照，并返回原有 prepared run 与 `rendered`。历史中的 generation 保存有效资源、执行配置和警告，即使后续清理快照仍可核对当时的设置。默认 `script_name="hpc-mcp-job.sh"`，限定为非保留的文件名，不覆盖原输入。同样要求明确输出过滤；显式输入列表自动包含脚本和 stdin，其他依赖仍需声明。`job_submit` 才上传／执行。CLI `script-generate SCHEDULER SPEC.json`、`prepare-generated CLUSTER INPUT_DIR SPEC.json --output PATTERN ...`。
 
 ## MPI、容器与临时空间
@@ -57,7 +97,9 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 
 返回 source（位置、来源、大小、SHA-256）、带源码行号／原文／certainty 的 directives、evidence、commands、paths、unresolved、extracted_spec，以及 template_draft。Slurm 第一条可执行语句之后的指令标为 inactive；LSF stdin 模式的后置指令继续分析，重复资源采用后项，所有原始证据保留。调度指令内容是字面量，变量不会被展开；run 名、cwd 和调度器日志由 job_submit 覆盖。[Slurm sbatch](https://slurm.schedmd.com/sbatch.html)、[LSF 作业脚本](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=bsub-write-job-scripts)。
 
-静态子集支持常用资源、内存／整分钟时间、source 绝对路径、export、mkdir -p、单条 argv 命令及 stdin/stdout/stderr 重定向。命令替换、变量、分支、循环、多行、追加／复杂描述符、多个命令、未知选项及 Python 入口保持 unresolved；引用中的动态符号也保守拒绝转换。没有 shebang 时解释器为 inferred，LSF -n 的 MPI／共享内存含义也必须核对。候选 argv 路径仅 inferred，不自动确定依赖。
+静态 Bash 子集支持常用资源、内存／整分钟时间、source 绝对路径、export、module load／purge、mkdir -p、单条 argv 命令及 stdin/stdout/stderr 重定向。交错的初始化及模块操作生成有序 setup_steps。命令替换、变量、分支、循环、多行、追加／复杂描述符、多个命令和未知选项保持 unresolved；引用中的动态符号也保守拒绝转换。没有 shebang 时解释器为 inferred，LSF -n 的 MPI／共享内存含义也必须核对。候选 argv 路径仅 inferred，不自动确定依赖。
+
+`.py` 后缀或 Python shebang 选择 AST 分析：返回候选 constants、CLI parameters、嵌入配置和潜在副作用 evidence，保留行号和原文；不求值名称、调用、f-string、分支或生成器。AST 限 20000 节点、常量递归深度 12、容器元素 128，各报告类别最多 256 项；syntax warning／动态逻辑保留未解析证据，Python 不产生自动 template_draft。MCP／CLI 的 script_inspect 保存报告并返回 report_id，供 profile_draft 引用。
 
 仅无未解析项、单调度器、单静态命令并有明确程序输出时返回通过生成器验证的模板草案；requires_review 始终 true，不证明 Shell 语义完全等价。agent 核对初始化顺序、资源、所有输入、输出和路径后，才能将 draft 作为 definition 传给 template_import；报告本身不是 definition。不改写原脚本，复杂场景仍可用 job_prepare 保存原文。CLI：`script-inspect FILE [--cluster NAME] [--max-bytes N]`。示例见 `examples/inspection/`。
 
@@ -183,10 +225,51 @@ LSF 返回 `exit_code`、`exit_reason`、`termination_reason`、`signal` 及 `st
 环境检查不会创建目录。队列可见不表示可以提交；共享目录可访问性需计算节点验证。LSF 槽位统计、Slurm 每节点内存及 GRES 原始字符串均保留调度器意义。
 SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理；本服务不存储密钥或密码。
 
+## 常驻监控与自动整理
+
+监控只作用于显式登记且已确认提交的 run，不扫描新输入，不调用提交／取消或远程清理。所有控制、任务策略和通知都保存在同一状态 SQLite；协调器使用独立进程和状态目录级 flock 单实例锁。MCP 连接退出不影响 detached 模式；本机停止时无法继续本地查询／下载，恢复后从已有身份和同步操作接续，不补发重复作业。
+
+| 工具 | 参数／行为 |
+| --- | --- |
+| `monitor_watch` | run_ids（1..500）、auto_sync=true、sync_options=null、cleanup_policy=null、reset=false；固定有效同步规则、目标、覆盖及限制，仅登记、不启动 |
+| `monitor_unwatch` | run_id；停用后续动作，保留记录；已登记同步 worker 或已开始清理可以完成，不取消远程任务 |
+| `monitor_start` | settings=null；省略重用已保存设置，启动时捕获当前集群配置。重复启动返回 already_running，修改设置须先停；返回 starting 后查询状态 |
+| `monitor_stop` | 无参数；请求优雅退出，不等待长查询；用 status 确认停止，已有 detached 同步 worker 独立完成 |
+| `monitor_status` | limit=50（1..500）、offset=0；本地读取 alive、heartbeat、状态、最新循环、监控策略、进度、错误、最后调度观测和日志路径，不访问 SSH |
+| `monitor_notifications` | after_id=0、limit=50（1..500）；返回终态整理、重试、需处理事件；保存 next_after_id 为下次游标，cursor_gap 表示旧通知已淘汰 |
+
+同一策略重复 watch 不重置进度或重试计数；显式 reset=true 或改变策略才重新启用。阶段为 watching、syncing、retry_wait、complete、needs_attention、disabled。只有本轮有效查询确认终态才开始回传；状态缺失、解析失败或断网保留原调度观测并退避。成功、失败、取消均可回传日志；调度终态与 Gaussian 应用成功仍是不同判断。重试达到 sync_max_attempts 后停止自动同步，不自动把覆盖策略改为 merge。空输出选择也计为失败，防止无结果时清除快照。
+
+每个状态查询窗口以 poll_interval_seconds 为最小间隔，同时限制任务数、SSH 命令数及并发。同集群／scope 的即时状态优先合并 squeue 或 bjobs；缺失记录、旧字段不支持及无原因的 LSF EXIT 走原有逐任务归档／原因回退，仍占查询预算。预算用完的任务延后且按上次实际查询时间公平推进，不使用陈旧成功状态作决定。worker 内的同步前后状态检查另受其超时及并行同步容量限制。[Slurm 查询接口](https://slurm.schedmd.com/squeue.html)、[LSF 多任务查询](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=reference-bjobs)。
+
+`settings_get.monitor` 暴露以下全部协调器设置；未知字段、bool 代替整数或超界值拒绝：
+
+| settings 字段 | 默认／范围 |
+| --- | --- |
+| poll_interval_seconds | 60，5..86400 |
+| retry_initial_seconds / retry_max_seconds | 60 / 3600；5..86400 / 5..604800，最大不得小于初始；指数退避，实际推进仍受查询窗口和预算限制 |
+| sync_max_attempts | 5，1..100；连续失败上限 |
+| query_concurrency | 2，1..8；查询组并发上限，组内回退串行 |
+| max_jobs_per_cycle | 50，1..500 |
+| max_status_commands_per_cycle | 20，1..500；一个窗口内状态 SSH 命令预算 |
+| max_sync_operations | 2，1..16；包括其他工具发起的 active worker；不会阻止用户另外手动启动 worker |
+| batch_queries | true；可关闭以适配旧站点 |
+| cleanup_interval_seconds | 3600，30..604800 |
+| notifications_limit | 1000，10..10000；只淘汰通知，不删除作业历史 |
+| input_cache_cleanup | null 默认关闭；可显式设置 older_than_seconds（默认 86400）及 max_cache_bytes（默认 10 GiB），均非负整数 |
+
+watch 的 sync_options 同 job_sync，省略项在登记时解析并固定；stable_only 强制 true。已有 worker 会被接管查询，不重复启动；进程中断后沿已有操作记录与 resume 规则恢复，目标冲突保持报错。已有完整下载必须与请求规则匹配并逐文件 SHA 校验才复用；结果被用户修改后不会默默重新覆盖，进入 needs_attention。更新集群配置后重新启动协调器以刷新捕获配置；已准备 run 的目标身份保护仍生效。
+
+cleanup_policy 默认 `{sync_cache_age_seconds:null, storage_categories:[], storage_age_seconds:604800}`，全部关闭。显式年龄为非负整数；storage_categories 只接受 snapshot、sync_history、old_outputs。每次清理都要求新确认终态、完整且非空的已下载结果及本地 SHA 校验；沿用作业锁与原有路径保护，保留最新项目结果和历史。snapshot 包括原始／有效输入，删除后不能重放。大结果校验会产生本地读取开销；输入内容缓存的全局保留策略是独立、显式启用的本地机制，不依赖远程查询。没有自动远程删除功能。
+
+日志为 STATE/monitor.log，最多当前文件及两个约 1 MiB 的轮转文件；进程中断状态由 PID 和唯一实例标识判断，不会把 PID 复用当成协调器存活。heartbeat 是上次写入时间，长查询或本地校验期间可能滞后，alive 为实际进程身份检查。通知是本地可拉取数据，不发送桌面、邮件或 Slack 消息。
+
+CLI：monitor-watch RUN_ID... [--no-auto-sync] [--sync-options JSON] [--cleanup-policy JSON] [--reset]；monitor-unwatch RUN_ID；monitor-start [--settings JSON]；monitor-stop；monitor-status [--limit N --offset N]；monitor-notifications [--after-id N --limit N]。monitor-run 使用前台进程及同一控制锁，供可选服务管理器调用；与 detached 模式不要同时启动。停机、更新及服务安装／卸载步骤见 README。systemd 用户服务可能在停止时终止同 cgroup 内的同步 worker，此时重启后按 interrupted／resume 规则恢复，不承诺该模式的 worker 跨服务停止继续执行。
+
 ## 更新检查与安装维护
 
 - `update_check(force=false, max_age_seconds=86400, timeout=10)`：每个新会话调用一次，向用户报告可用更新。公开 HTTPS API 比较本地提交和官方仓库 main；不访问 SSH。`force` 跳过缓存，缓存最长 604800 秒，0 禁用复用；每次请求超时 1..60 秒，最多两个请求。GitHub 限流或离线返回 `ok=false`、`update_available=null`，不覆盖上次成功缓存。
-- `update_plan` 接受同样参数，重新读取本地 Git 状态后返回 `check`、`blockers`、`commands`、`restart_required`。每条命令包含 `argv`（优先使用）、`cwd` 和供人阅读的 `display`。只为干净的官方 main editable/source 安装生成固定提交的快进方案，存在 queued／running 同步操作时阻止更新（先查询／等待完成）；本地超前、分叉、其他 origin 或普通 wheel 安装需要人工处理。已经最新时 commands 为空。
+- `update_plan` 接受同样参数，重新读取本地 Git 状态后返回 `check`、`blockers`、`commands`、`restart_required`。每条命令包含 `argv`（优先使用）、`cwd` 和供人阅读的 `display`。只为干净的官方 main editable/source 安装生成固定提交的快进方案，存在启动中／运行中／停止中的协调器或 queued／running 同步操作时阻止更新（先停止协调器，再查询／等待 worker 完成）；本地超前、分叉、其他 origin 或普通 wheel 安装需要人工处理。已经最新时 commands 为空。
 - 工具不执行更新。停止 MCP 连接后再次核对 Git 工作区，备份配置和完整状态目录，依次执行命令，失败即停。重启使用相同绝对配置、状态路径，然后验证工具发现和历史读取。远程作业继续由调度器运行，无需重新提交。
 - `settings_get.updates` 暴露默认检查参数及 `cached_check`。缓存是历史结果，可能过期；需要及时判断时调用 `update_check`。状态目录只多出一个小型 JSON 缓存，不修改任务数据。不自动配置定时任务或客户端文件，也不自动安装更新。
 

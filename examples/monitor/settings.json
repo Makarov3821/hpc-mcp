@@ -1,0 +1,14 @@
+{
+  "poll_interval_seconds": 60,
+  "retry_initial_seconds": 60,
+  "retry_max_seconds": 3600,
+  "sync_max_attempts": 5,
+  "query_concurrency": 2,
+  "max_jobs_per_cycle": 50,
+  "max_status_commands_per_cycle": 20,
+  "max_sync_operations": 2,
+  "batch_queries": true,
+  "cleanup_interval_seconds": 3600,
+  "notifications_limit": 1000,
+  "input_cache_cleanup": null
+}

@@ -17,6 +17,63 @@ def main():
     parser.add_argument("--state-dir", default=os.environ.get("HPC_MCP_STATE", ".hpc-mcp"))
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
+    probe = sub.add_parser('cluster-probe', help='Read-only new-cluster onboarding; no software disk search')
+    probe.add_argument('ssh_host')
+    probe.add_argument('--scheduler', choices=('lsf', 'slurm'))
+    probe.add_argument('--work-root')
+    probe.add_argument('--path', action='append')
+    probe.add_argument('--module-avail', action=argparse.BooleanOptionalAction, default=True)
+    probe.add_argument('--max-module-bytes', type=int, default=32768)
+    probe.add_argument('--timeout', type=int, default=30)
+    probe.add_argument('--cluster')
+    probe.add_argument('--queue-details', action='store_true')
+    sub.add_parser('onboarding-report').add_argument('report_id')
+    draft = sub.add_parser('profile-draft')
+    draft.add_argument('name')
+    draft.add_argument('cluster')
+    draft.add_argument('application')
+    draft.add_argument('definition_file')
+    draft.add_argument('--report-id', action='append')
+    confirm = sub.add_parser('profile-confirm')
+    confirm.add_argument('profile_id')
+    confirm.add_argument('review_token')
+    confirm.add_argument('--confirmation-note', required=True)
+    confirm.add_argument('--make-default', action=argparse.BooleanOptionalAction, default=True)
+    sub.add_parser('profile-get').add_argument('profile_id')
+    profile_list = sub.add_parser('profile-list')
+    profile_list.add_argument('--cluster')
+    profile_list.add_argument('--application')
+    profile_list.add_argument('--limit', type=int, default=50)
+    profile_list.add_argument('--offset', type=int, default=0)
+    profile_plan = sub.add_parser('profile-plan')
+    profile_plan.add_argument('input_dir')
+    profile_plan.add_argument('--profile-id')
+    profile_plan.add_argument('--cluster')
+    profile_plan.add_argument('--application')
+    profile_plan.add_argument('--parameters', default='{}')
+    profile_plan.add_argument('--project-root')
+    validate = sub.add_parser('profile-validate')
+    validate.add_argument('profile_id')
+    validate.add_argument('--command', help='JSON short validation argv; prepares only')
+    validate.add_argument('--parameters', help='JSON template bindings')
+    validate.add_argument('--run-id', help='Assess an existing submitted validation probe')
+    for action in ("monitor-start", "monitor-run"):
+        monitor = sub.add_parser(action, help="Detached coordinator start or foreground service process")
+        monitor.add_argument("--settings", help="JSON settings; omit to reuse persisted defaults")
+    sub.add_parser("monitor-stop")
+    monitor_status = sub.add_parser("monitor-status")
+    monitor_status.add_argument("--limit", type=int, default=50)
+    monitor_status.add_argument("--offset", type=int, default=0)
+    notifications = sub.add_parser("monitor-notifications")
+    notifications.add_argument("--after-id", type=int, default=0)
+    notifications.add_argument("--limit", type=int, default=50)
+    watch = sub.add_parser("monitor-watch")
+    watch.add_argument("run_ids", nargs="+")
+    watch.add_argument("--auto-sync", action=argparse.BooleanOptionalAction, default=True)
+    watch.add_argument("--sync-options", default="{}")
+    watch.add_argument("--cleanup-policy", default="{}")
+    watch.add_argument("--reset", action="store_true")
+    sub.add_parser("monitor-unwatch").add_argument("run_id")
     for action in ("check", "info"):
         sub.add_parser(action).add_argument("cluster")
     sub.add_parser("serve", help="Run MCP over stdio (requires the mcp extra)")
@@ -149,9 +206,11 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == "script-inspect":
-            from .script_inspection import ScriptInspector
-            inspector_service = ClusterService(load_config(args.config)) if args.cluster else None
-            data = ScriptInspector(inspector_service).inspect(args.script_path, args.cluster, args.max_bytes)
+            from .profiles import ProfileService
+            from .jobs import JobService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            data = ProfileService(ClusterService(clusters), JobService(clusters, args.state_dir)).inspect(
+                args.script_path, args.cluster, args.max_bytes)
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return
         if args.action == "gaussian-inspect":
@@ -172,11 +231,40 @@ def main():
             data = script_generate(args.scheduler, json.loads(Path(args.spec_file).expanduser().read_text()))
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return
-        clusters = {} if args.action in ("config-set", "template-import", "template-list", "template-get", "sync-operation", "storage-cleanup", "input-cache-cleanup", "gaussian-result") \
+        onboarding = args.action.startswith('profile-') or args.action in ('cluster-probe', 'onboarding-report')
+        clusters = {} if (onboarding or args.action in ("serve", "config-set", "template-import", "template-list", "template-get", "sync-operation", "storage-cleanup", "input-cache-cleanup", "gaussian-result", "monitor-status", "monitor-stop", "monitor-unwatch", "monitor-notifications")) \
             and not Path(args.config).exists() \
             else load_config(args.config)
         config = ConfigManager(args.config, clusters)
         service = ClusterService(clusters)
+        if onboarding:
+            from .profiles import ProfileService
+            from .jobs import JobService
+            profiles = ProfileService(service, JobService(clusters, args.state_dir))
+            if args.action == 'cluster-probe':
+                data = profiles.probes.probe(args.ssh_host, args.scheduler, args.work_root,
+                    args.path, args.module_avail, args.max_module_bytes, args.timeout, args.cluster, args.queue_details)
+            elif args.action == 'onboarding-report':
+                data = {'ok': True, 'report': profiles.store.get(args.report_id)}
+            elif args.action == 'profile-draft':
+                data = profiles.draft(args.name, args.cluster, args.application,
+                    json.loads(Path(args.definition_file).read_text()), args.report_id)
+            elif args.action == 'profile-confirm':
+                data = profiles.confirm(args.profile_id, args.review_token, args.confirmation_note, args.make_default)
+            elif args.action == 'profile-get':
+                data = profiles.get(args.profile_id)
+            elif args.action == 'profile-list':
+                data = profiles.list(args.cluster, args.application, args.limit, args.offset)
+            elif args.action == 'profile-plan':
+                data = profiles.plan(args.input_dir, args.profile_id, args.cluster, args.application,
+                                     json.loads(args.parameters), args.project_root)
+            else:
+                data = profiles.validate(args.profile_id, json.loads(args.command) if args.command else None,
+                                         json.loads(args.parameters) if args.parameters else None, args.run_id)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            if not data.get('ok', True):
+                sys.exit(1)
+            return
         if args.action == "serve":
             from .jobs import JobService
             from .server import create_server
@@ -194,7 +282,24 @@ def main():
         else:
             from .jobs import JobService
             jobs = JobService(service.clusters, args.state_dir)
-            if args.action == "gaussian-prepare":
+            if args.action.startswith("monitor-"):
+                from .monitor import MonitorService
+                monitor = MonitorService(jobs)
+                if args.action in ("monitor-start", "monitor-run"):
+                    data = monitor.start(json.loads(args.settings) if args.settings is not None else None,
+                                         foreground=args.action == "monitor-run")
+                elif args.action == "monitor-stop":
+                    data = monitor.stop()
+                elif args.action == "monitor-status":
+                    data = monitor.status(args.limit, args.offset)
+                elif args.action == "monitor-notifications":
+                    data = monitor.notifications(args.after_id, args.limit)
+                elif args.action == "monitor-unwatch":
+                    data = monitor.unwatch(args.run_id)
+                else:
+                    data = monitor.watch(args.run_ids, args.auto_sync, json.loads(args.sync_options),
+                                         json.loads(args.cleanup_policy), args.reset)
+            elif args.action == "gaussian-prepare":
                 from .gaussian import GaussianService
                 data = GaussianService(jobs).prepare(args.cluster, args.input_file, args.project_root,
                     json.loads(Path(args.spec_file).read_text()), args.output, json.loads(args.changes),

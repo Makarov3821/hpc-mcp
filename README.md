@@ -8,7 +8,7 @@
 
 ## 1. 检查前置条件
 
-确认仓库绝对路径、可写的配置文件路径、固定的本地状态目录，以及用户指定的 SSH 别名、调度器和共享工作目录。已有配置优先复用；缺失的集群信息询问用户，不猜测。
+确认仓库绝对路径、可写的配置文件路径、固定的本地状态目录，以及用户指定的 SSH 别名。已有配置优先复用；新增集群可先探测调度器，再请用户确认工作目录和应用运行方式，不猜测软件安装位置。
 
 安装 agent 应把源码 checkout／虚拟环境与运行数据分开。配置、历史及输入快照放在用户选定的 agent 数据目录，例如 Codex 使用 `/home/USER/.codex/hpc-mcp/clusters.toml` 和 `/home/USER/.codex/hpc-mcp/state/`。其他客户端按其实际数据目录选择独立的 `hpc-mcp/` 子目录，或复用同一状态目录共享历史。不要默认把这些数据留在源码仓库或项目 A 中；始终在注册命令里指定 `--config`、`--state-dir` 的绝对路径。目录不可写时报告安装限制，不擅自更改客户端权限。
 
@@ -46,6 +46,24 @@ python3 -m venv .venv
 发行包、CLI 命令和 MCP 注册名统一为 `hpc-mcp`，Python 模块名为 `hpc_mcp`。CLI 默认读取当前目录的 `clusters.toml`，状态存放在 `.hpc-mcp/`；也可使用 `HPC_MCP_CONFIG`、`HPC_MCP_STATE` 环境变量或对应命令行参数指定路径。注册客户端时显式指定固定的绝对路径。
 
 ## 3. 配置集群
+
+新集群先完成以下闭环；仅有 SSH 别名即可开始，`serve` 可以在指定配置文件尚不存在时启动空服务：
+
+1. `cluster_probe(ssh_host)`：保存登录信息、调度器候选和队列信息。软件环境发现最多查询一次有大小限制的 `module avail`；不扫盘、不递归搜索、不加载模块。多个调度器或命令不可见时请用户选择／提供可信登录初始化文件。
+2. 用户提供常用脚本后调用 `script_inspect`，取得持久 `report_id`。Bash 支持静态指令和有序 source／export／module 设置；Python 提交器仅提取常量、参数声明、嵌入脚本及副作用证据，不导入或执行原程序。缺失、动态环境请用户补充；可用 `cluster_probe(paths=[明确绝对路径])` 检查具体路径，不扩展搜索。
+3. 用下述 `cluster_configure`／`config-set` 保存连接设置；再整理应用模板定义，通过 `profile_draft(name, cluster, application, definition, report_ids)` 保存待审版本。资源事实、用户默认值和本次任务参数分别解释；同一集群可保存 Gaussian、MPI、容器等不同运行配置。
+4. 向用户展示完整定义、有效默认资源、环境顺序、输入输出和未解析项。用户确认后，调用 `profile_confirm(profile_id, review_token, confirmation_note)`，记录确认并设置该集群／应用的默认配置。确认不表示计算节点验证通过。
+5. `profile_validate(profile_id, command=[用户确认的短验证命令], parameters=参数)` 只准备小作业，使用该配置的资源、环境和启动器；先展示渲染脚本及资源，用户授权后才调用 `job_submit`。随后用 `profile_validate(profile_id, run_id=编号)` 查询状态、回传有限大小的日志并记录验证证据。排队、失败或证据不足不会标为验证通过。
+6. 日常使用 `profile_plan(input_dir, cluster, application, parameters, project_root)` 准备独立任务，再用已有提交、状态与同步工具执行。默认配置固定模板版本和来源；单个任务覆盖只能使用声明参数。Gaussian 卡先用 `gaussian_inspect` 核对核数、内存和 checkpoint，需改写时仍用 Gaussian 专用辅助。
+
+CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）：
+
+```bash
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/AGENT/hpc-mcp/clusters.toml \
+  --state-dir /ABS/AGENT/hpc-mcp/state cluster-probe YOUR_SSH_ALIAS
+```
+
+探测、脚本报告、确认、模板和验证记录存入同一 agent 状态 SQLite，可通过 `onboarding_report`、`profile_get` 和 `profile_list` 在重启后读取。示例 [Gaussian LSF 配置](examples/profiles/gaussian-lsf.json) 的路径、队列和资源仅为占位示范，必须按用户脚本调整；LSF 内存预留作用范围仍需站点确认。验证仅覆盖具体命令、参数和资源布局；改变参数会在任务历史中标为未验证，修改集群设置需创建新配置版本。远程软件内容变化无法通过本地读取自动发现，站点变更后应显式重新验证。
 
 已有 `clusters.toml` 时先读取。新增或更新配置可以使用 CLI 的 JSON 设置接口：
 
@@ -173,7 +191,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 # 实际清理：在同一命令末尾添加 --apply
 ```
 
-清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；MCP 自身不启动后台定时器。相同选择规则、目标和远程文件指纹下，失败下载可复用暂存续传；规则或文件变化时创建新尝试。
+清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；默认不启动后台协调器；需要服务内自动保留策略时显式使用下节 monitor 工具。相同选择规则、目标和远程文件指纹下，失败下载可复用暂存续传；规则或文件变化时创建新尝试。
 
 ## 6. 生成单任务脚本与复用模板
 
@@ -227,7 +245,7 @@ Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%np
 /ABS/REPO/.venv/bin/hpc-mcp script-generate slurm /ABS/REPO/examples/resources/mpi-slurm.json
 ```
 
-分析不会执行源码，返回 SHA、行号、字面资源、环境、路径及未解析项。template_draft 只是待审草案；agent 核对资源、原初始化顺序、完整输入依赖和输出后，才调用 template_import。变量、分支、多个命令和 Python 入口不自动转换，继续用 job_prepare 保存原脚本。`used-scripts/` 的 Python 提交入口仍处于研究阶段。
+分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后可纳入 profile_draft，或直接导入独立模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，`used-scripts/` 的三个提交器已有只读分析测试，完整兼容适配仍待开发。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
 
 MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_node 和 launcher；OpenMP 线程在 environment 明确设置。Slurm 可指定精确均匀节点布局；LSF 按总 slots 和每 host 的 ptile 表达，不声称精确多节点数。GPU 使用 scheduler 专用 slurm_gres／slurm_gpus_per_task／lsf_gpu，容器支持可信远程 Apptainer／Singularity 镜像、显式挂载和单节点 scratch。镜像及软件不随任务上传；scratch 不改变输出 cwd，不自动回传中间文件。
 
@@ -279,7 +297,41 @@ hpc-mcp remote-cleanup RUN_ID
 
 `job_storage_cleanup` 只处理终态且所选输出同步完成的登记作业；可删除输入快照、旧输出快照和输出归档，保留历史及最新结果。删除快照后不能从这些文件重放任务。集群 `input_cache=true` 可启用共享内容缓存和独立 CoW 快照，默认关闭；空间收益取决于文件系统，不支持 reflink 时复制会增加占用，缓存清理不删除任务快照。
 
-`job_remote_cleanup` 默认保留远程目录。应用清理需重新确认调度终态、验证已下载文件及原始提交回执，路径严格限定登记 run；**未选择回传的远程文件也会被永久删除**，必须先核对要保留的结果。所有清理均无内置定时器；常驻监控和定时整理仍属于 Phase 6。
+`job_remote_cleanup` 默认保留远程目录。应用清理需重新确认调度终态、验证已下载文件及原始提交回执，路径严格限定登记 run；**未选择回传的远程文件也会被永久删除**，必须先核对要保留的结果。单次清理工具不自带定时器；Phase 6 协调器可按明确启用的策略定期执行本地保留，自动远程删除始终关闭。
+
+### 显式启用常驻监控
+
+提交确认后，由 agent 只登记用户选定的 run，再启动协调器。默认 auto_sync=true，清理关闭；策略在登记时固定，不因 agent 退出而丢失：
+
+```bash
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/CONFIG --state-dir /ABS/STATE \
+  monitor-watch RUN_ID --sync-options '{"includes":["test1.log","test1.chk"],"overwrite":"error"}'
+/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/CONFIG --state-dir /ABS/STATE monitor-start
+/ABS/REPO/.venv/bin/hpc-mcp --state-dir /ABS/STATE monitor-status
+/ABS/REPO/.venv/bin/hpc-mcp --state-dir /ABS/STATE monitor-notifications --after-id 0
+```
+
+MCP 同名工具使用下划线。项目作业默认回原任务目录，暂存仍位于 A/.hpc-mcp-sync；协调器配置、日志和事件均在原 agent 状态目录。查询确认终态后回传，失败退避；连续同步失败到上限进入 needs_attention，agent 应报告错误并核对后用 monitor_watch(reset=true) 重新启用，不能自动改变覆盖规则。完成事件包含调度结局与结果路径；Gaussian 还应调用 gaussian_result 判断应用结果。agent 保存通知游标，重新连接后补读，通知不是桌面推送。
+
+仅跟踪时使用 auto_sync=false／CLI --no-auto-sync；monitor_unwatch 停止安排该 run 后续动作。monitor_stop 请求协调器退出，monitor_status 确认 stopped；已开始的 detached worker 和清理可能继续完成，远程作业不会因此取消。重启会接管未结束 worker，断网或记账缺失不触发重复提交，也不据陈旧终态清理数据。
+
+可选 cleanup_policy：`{"sync_cache_age_seconds":86400,"storage_categories":["sync_history","old_outputs"],"storage_age_seconds":604800}`。需要删除输入快照时显式加入 snapshot，删除后不能从这些文件重放。清理前重新确认终态并校验下载结果，保留项目输出和历史。全局输入缓存保留在 monitor_start.settings.input_cache_cleanup 独立启用。查询周期、预算、并发、同步容量和通知上限均由 [接口参考](docs/REFERENCE.md) 列出；示例见 [examples/monitor](examples/monitor/)。
+
+本机关闭／休眠期间无法查询或下载，远程作业仍按调度器管理；醒来后按最新状态继续，不补跑积压轮询。detached 进程可跨 MCP 客户端退出，但不自动开机启动，注销时能否保留也取决于本机会话管理。需要服务托管时，可审查 [systemd 用户单元模板](examples/monitor/hpc-mcp-monitor.service)，替换全部 /ABS/... 后安装到 ~/.config/systemd/user/hpc-mcp-monitor.service；它使用前台 monitor-run 和已有登记策略，不要同时另起 monitor-start：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now hpc-mcp-monitor.service
+systemctl --user status hpc-mcp-monitor.service
+# 更新或暂时停止：
+systemctl --user stop hpc-mcp-monitor.service
+# 卸载托管：
+systemctl --user disable --now hpc-mcp-monitor.service
+rm -- ~/.config/systemd/user/hpc-mcp-monitor.service
+systemctl --user daemon-reload
+```
+
+模板采用 on-failure 重启和 control-group 停止方式；服务退出可能中断同组同步 worker，恢复后识别 interrupted 并按暂存续传，不保证 worker 跨服务停止存活。若用户希望注销后／开机无登录时仍运行，应单独确认该运行需求及系统策略，再配置用户 lingering；不擅自改变其他用户服务设置。[systemd 服务配置](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)、[进程停止范围](https://github.com/systemd/systemd/blob/main/man/systemd.kill.xml)、[用户 lingering](https://www.freedesktop.org/software/systemd/man/252/loginctl.html)。Windows／macOS 服务托管及系统单元实机验收尚未实现；当前进程锁和身份检查面向 Linux。
 
 ## 7. 更新与旧版本迁移
 
@@ -290,7 +342,7 @@ MCP 提供 `update_check(force=false, max_age_seconds=86400, timeout=10)` 和 `u
 /ABS/hpc-mcp/.venv/bin/hpc-mcp --state-dir /ABS/AGENT/hpc-mcp/state update-plan --force
 ```
 
-agent 应检查 `ok`、`blockers`、`commands`；存在 queued／running 同步 worker 时更新计划会阻止安装，先通过 `job_get` 中的 `last_sync_operation` 查询并等待结束或核查中断。执行前停止 MCP 连接、再次核对工作区，并按 `cwd` 依次运行 `argv`，任何一步失败立即停止。计划固定检查到的提交，使用 `git fetch`、`git merge --ff-only` 与现有虚拟环境中的 pip，依赖仍遵循仓库锁定文件。有未保存改动、非 `main` 分支、非官方 origin 或分叉时不生成自动更新命令；普通非 editable 安装需按第 2 节重新安装。失败后修复问题再重启服务，不把安装失败当作更新成功。
+agent 应检查 `ok`、`blockers`、`commands`；存在启动中／运行中／停止中的协调器或 queued／running 同步 worker 时更新计划会阻止安装，先停止协调器或托管服务并确认 stopped，再通过 `job_get` 中的 `last_sync_operation` 查询并等待结束或核查中断。执行前停止 MCP 连接、再次核对工作区，并按 `cwd` 依次运行 `argv`，任何一步失败立即停止。计划固定检查到的提交，使用 `git fetch`、`git merge --ff-only` 与现有虚拟环境中的 pip，依赖仍遵循仓库锁定文件。有未保存改动、非 `main` 分支、非官方 origin 或分叉时不生成自动更新命令；普通非 editable 安装需按第 2 节重新安装。失败后修复问题再重启服务，不把安装失败当作更新成功。
 
 旧版没有这些工具，需要先按以下命令手动更新一次。备份数据后更新；重启仍使用原来的配置、状态路径，并确认 `update_check`／`update_plan` 可用。
 
@@ -314,7 +366,7 @@ Codex 的旧条目可用 `codex mcp remove xn02-clusters` 移除，再按第 4 �
 
 ## 8. 卸载与数据清理
 
-先停止客户端中的本服务，解除注册，再卸载 Python 包：
+先调用 monitor_stop 并确认 stopped；若使用 systemd 托管，先按上节禁用并移除用户单元。通过 job_sync_operation 确认已开始的 worker 完成或中断，再停止客户端中的本服务、解除注册并卸载 Python 包：
 
 ```bash
 codex mcp remove hpc-mcp
@@ -339,9 +391,9 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-当前 128 项测试全部通过，包含 Gaussian、增量续传、同步进程恢复和清理保护；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、34 个工具及其参数发现、结构化结果、配置更新、脚本生成、模板保存／计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+当前测试包含 Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、48 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
-当前支持普通批处理脚本只读分析、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
+当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。复杂 Python 入口完整兼容、批量并发控制、数组、作业依赖和用量统计尚未实现；packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 
 ## 许可证
 

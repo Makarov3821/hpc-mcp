@@ -1,0 +1,15 @@
+# Template only: replace every /ABS/... path, review policies, then install manually.
+[Unit]
+Description=hpc-mcp local job coordinator
+
+[Service]
+Type=simple
+ExecStart=/ABS/REPO/.venv/bin/hpc-mcp --config /ABS/CONFIG --state-dir /ABS/STATE monitor-run
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=600
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

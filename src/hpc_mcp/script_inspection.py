@@ -50,12 +50,18 @@ class ScriptInspector:
             raise ValueError('script must be UTF-8 text') from exc
         if '\x00' in text:
             raise ValueError('script contains NUL')
-        return analyze(text, {**source, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)})
+        source.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+        if str(script_path).endswith('.py') or (text.startswith('#!') and 'python' in text.splitlines()[0]):
+            from .python_inspection import analyze_python
+            return analyze_python(text, source)
+        return analyze(text, source)
 
 
 def analyze(text, source):
     directives, evidence, unresolved, paths, commands = [], [], [], [], []
     spec = {'resources': {}, 'environment': {}, 'init_scripts': []}
+    setup_steps = []
+    ordered = False
     schedulers = set()
     executable_seen = False
     lines = text.splitlines()
@@ -192,16 +198,31 @@ def analyze(text, source):
                 if not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', name):
                     raise ValueError('invalid export variable')
                 spec['environment'][name] = value
+                setup_steps.append({'kind': 'export', 'name': name, 'value': value})
                 evidence.append(item(number, raw, kind='environment', name=name, value=value))
                 continue
             if tokens[0] in ('source', '.'):
                 if len(tokens) != 2 or not tokens[1].startswith('/'):
                     raise ValueError('source requires one literal remote absolute path')
                 if spec['environment']:
-                    problem(number, 'source after export would change initialization order in a generated template')
+                    ordered = True
                 spec['init_scripts'].append(tokens[1])
+                setup_steps.append({'kind': 'source', 'path': tokens[1]})
                 evidence.append(item(number, raw, kind='init_script', path=tokens[1]))
                 path_hint(number, raw, tokens[1], 'remote_dependency')
+                continue
+            if tokens[0] == 'module':
+                if tokens[1:2] == ['load'] and len(tokens) > 2:
+                    step = {'kind': 'module_load', 'modules': tokens[2:]}
+                elif tokens[1:] == ['purge']:
+                    step = {'kind': 'module_purge'}
+                else:
+                    raise ValueError('only literal module load and module purge are supported')
+                from .environment_setup import render_setup
+                render_setup([step])
+                setup_steps.append(step)
+                ordered = True
+                evidence.append(item(number, raw, kind='module', step=step))
                 continue
             if tokens[0] == 'mkdir' and tokens[1:2] == ['-p']:
                 directories = tokens[2:]
@@ -263,6 +284,10 @@ def analyze(text, source):
             spec.update(command=argv, **redirections)
         except ValueError as exc:
             problem(number, str(exc))
+    if ordered:
+        spec['setup_steps'] = setup_steps
+        spec['environment'] = {}
+        spec['init_scripts'] = []
     scheduler = next(iter(schedulers)) if len(schedulers) == 1 else None
     if scheduler is None:
         problem(1, 'exactly one active scheduler directive family is required for a template draft')
