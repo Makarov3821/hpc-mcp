@@ -135,6 +135,29 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "outputs": ["test.log", "test.chk"], "changes": {"cpus": 2}})
                         self.assertFalse(gaussian.is_error, gaussian.content)
                         self.assertTrue(gaussian.structured_content["gaussian"]["diff"])
+                        self.assertNotIn('spec', tools['gaussian_prepare'].input_schema.get('required', []))
+                        self.assertTrue(tools['gaussian_prepare'].input_schema['properties']['compact']['default'])
+                        learned = await client.call_tool('profile_draft', {'name': 'learned-qg16', 'cluster': 'lab',
+                            'application': 'gaussian', 'definition': {'scheduler': 'lsf',
+                                'spec': {'command': ['g16'], 'stdin': '{{input}}', 'stdout': '{{stem}}.log',
+                                    'resources': {'cpus': 2}},
+                                'parameters': {'input': {'type': 'string'}, 'stem': {'type': 'string'}},
+                                'input_files': ['{{input}}'], 'outputs': ['{{stem}}.log', '{{stem}}.chk']}})
+                        self.assertFalse(learned.is_error, learned.content)
+                        learned_profile = learned.structured_content['profile']
+                        self.assertTrue(Path(learned_profile['configuration_file']).is_file())
+                        activated = await client.call_tool('profile_confirm', {'profile_id': learned_profile['profile_id'],
+                            'review_token': learned_profile['review_token'], 'confirmation_note': 'User confirms Gaussian defaults'})
+                        self.assertFalse(activated.is_error, activated.content)
+                        reused = await client.call_tool('gaussian_prepare', {'cluster': 'lab',
+                            'input_file': str(source / 'test.gjf'), 'project_root': str(project)})
+                        self.assertFalse(reused.is_error, reused.content)
+                        self.assertTrue(reused.structured_content['compact'])
+                        self.assertEqual(reused.structured_content['run']['profile']['profile_id'], learned_profile['profile_id'])
+                        self.assertEqual(reused.structured_content['gaussian']['diff'], '')
+                        discovery = await client.call_tool('profile_list', {'cluster': 'lab', 'application': 'gaussian'})
+                        self.assertFalse(discovery.is_error)
+                        self.assertNotIn('definition', discovery.structured_content['profiles'][0])
                         cache = await client.call_tool("input_cache_cleanup", {})
                         self.assertFalse(cache.is_error)
                         self.assertTrue(cache.structured_content["dry_run"])

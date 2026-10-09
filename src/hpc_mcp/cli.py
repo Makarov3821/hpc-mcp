@@ -73,6 +73,7 @@ def main():
     profile_list.add_argument('--application')
     profile_list.add_argument('--limit', type=int, default=50)
     profile_list.add_argument('--offset', type=int, default=0)
+    profile_list.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
     profile_plan = sub.add_parser('profile-plan')
     profile_plan.add_argument('input_dir')
     profile_plan.add_argument('--profile-id')
@@ -80,6 +81,7 @@ def main():
     profile_plan.add_argument('--application')
     profile_plan.add_argument('--parameters', default='{}')
     profile_plan.add_argument('--project-root')
+    profile_plan.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
     validate = sub.add_parser('profile-validate')
     validate.add_argument('profile_id')
     validate.add_argument('--command', help='JSON short validation argv; prepares only')
@@ -118,10 +120,13 @@ def main():
     gaussian = sub.add_parser("gaussian-prepare")
     gaussian.add_argument("cluster")
     gaussian.add_argument("input_file")
-    gaussian.add_argument("spec_file")
+    gaussian.add_argument("spec_file", nargs='?', help='Omit to reuse the confirmed Gaussian default')
     gaussian.add_argument("--project-root", required=True)
-    gaussian.add_argument("--output", action="append", required=True)
-    gaussian.add_argument("--changes", default="{}", help="JSON snapshot-only cpus/memory/paths changes")
+    gaussian.add_argument("--output", action="append")
+    gaussian.add_argument("--changes", help="JSON snapshot-only cpus/memory/paths overrides")
+    gaussian.add_argument('--profile-id')
+    gaussian.add_argument('--parameters', help='JSON declared profile binding overrides')
+    gaussian.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
     gaussian.add_argument("--dependency", action="append")
     gaussian.add_argument("--allow-unresolved", action="store_true")
     gaussian.add_argument("--max-input-bytes", type=int)
@@ -311,10 +316,11 @@ def main():
             elif args.action == 'profile-get':
                 data = profiles.get(args.profile_id)
             elif args.action == 'profile-list':
-                data = profiles.list(args.cluster, args.application, args.limit, args.offset)
+                data = profiles.list(args.cluster, args.application, args.limit, args.offset, args.compact)
             elif args.action == 'profile-plan':
-                data = profiles.plan(args.input_dir, args.profile_id, args.cluster, args.application,
-                                     json.loads(args.parameters), args.project_root)
+                from .responses import preparation_receipt
+                data = preparation_receipt(profiles.plan(args.input_dir, args.profile_id, args.cluster, args.application,
+                                     json.loads(args.parameters), args.project_root), args.compact)
             else:
                 data = profiles.validate(args.profile_id, json.loads(args.command) if args.command else None,
                                          json.loads(args.parameters) if args.parameters else None, args.run_id)
@@ -358,9 +364,22 @@ def main():
                                          json.loads(args.cleanup_policy), args.reset)
             elif args.action == "gaussian-prepare":
                 from .gaussian import GaussianService
-                data = GaussianService(jobs).prepare(args.cluster, args.input_file, args.project_root,
-                    json.loads(Path(args.spec_file).read_text()), args.output, json.loads(args.changes),
-                    args.dependency, args.allow_unresolved, args.max_input_bytes)
+                from .responses import preparation_receipt
+                changes = json.loads(args.changes) if args.changes is not None else None
+                if args.spec_file is None:
+                    from .profiles import ProfileService
+                    data = ProfileService(service, jobs).gaussian_plan(args.cluster, args.input_file,
+                        args.project_root, args.profile_id, json.loads(args.parameters) if args.parameters else None,
+                        args.output, changes, args.dependency, args.allow_unresolved, args.max_input_bytes)
+                else:
+                    if args.profile_id is not None or args.parameters is not None:
+                        raise ValueError('choose a saved profile or an explicit spec, not both')
+                    if not args.output:
+                        raise ValueError('explicit spec requires --output')
+                    data = GaussianService(jobs).prepare(args.cluster, args.input_file, args.project_root,
+                        json.loads(Path(args.spec_file).read_text()), args.output, changes,
+                        args.dependency, args.allow_unresolved, args.max_input_bytes)
+                data = preparation_receipt(data, args.compact)
             elif args.action == "gaussian-result":
                 from .gaussian import GaussianService
                 data = GaussianService(jobs).result(args.run_id, args.log_path, args.max_bytes)

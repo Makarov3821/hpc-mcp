@@ -126,7 +126,8 @@ class GaussianService:
     def prepare(self, cluster: str, input_file: str, project_root: str, spec: dict,
                 outputs: list[str], changes: dict | None = None,
                 dependencies: list[str] | None = None, allow_unresolved: bool = False,
-                max_input_bytes: int | None = None) -> dict:
+                max_input_bytes: int | None = None, template_options: dict | None = None,
+                template_context: dict | None = None) -> dict:
         if type(allow_unresolved) is not bool:
             raise ValueError("allow_unresolved must be boolean")
         report = gaussian_inspect(input_file)
@@ -240,7 +241,8 @@ class GaussianService:
         result = rendered(cluster, str(path.parent), spec, outputs, project_root,
                           sorted(input_files), max_input_bytes=max_input_bytes,
                           input_overrides={path.name: effective}, input_sources=sources,
-                          original_inputs={path.name: original}, application_context=provenance)
+                          original_inputs={path.name: original}, application_context=provenance,
+                          context=template_context, **(template_options or {}))
         run = result["run"]
         return {**result, "gaussian": run["application"]}
 

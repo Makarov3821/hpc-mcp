@@ -12,6 +12,7 @@ import uuid
 from .cluster_probe import ClusterProbe
 from .history import now
 from .onboarding_store import OnboardingStore, digest
+from .profile_files import configuration_file
 from .script_inspection import ScriptInspector
 from .templates import TemplateService, bind, validate_definition
 
@@ -90,6 +91,8 @@ class ProfileService:
 
     def get(self, profile_id):
         profile = self._read(profile_id)
+        path, _ = configuration_file(self.jobs.history, profile)
+        profile['configuration_file'] = str(path)
         with self.jobs.history.connect() as db:
             confirmed = db.execute('SELECT time,note FROM profile_confirmations WHERE profile_id=?', (profile_id,)).fetchone()
             default = db.execute('SELECT profile_id FROM profile_defaults WHERE cluster=? AND application=?',
@@ -113,14 +116,23 @@ class ProfileService:
         profile['template'] = {'name': 'profile.' + profile_id, 'version': 1} if confirmed else None
         return {'ok': True, 'profile': profile}
 
-    def list(self, cluster=None, application=None, limit=50, offset=0):
+    def list(self, cluster=None, application=None, limit=50, offset=0, compact=False):
+        if type(compact) is not bool:
+            raise ValueError('compact must be boolean')
         if type(limit) is not int or not 1 <= limit <= 500 or type(offset) is not int or offset < 0:
             raise ValueError('limit must be 1..500; offset must be nonnegative')
         with self.jobs.history.connect() as db:
             rows = db.execute('SELECT id FROM application_profiles WHERE (? IS NULL OR cluster=?) '
                 'AND (? IS NULL OR application=?) ORDER BY rowid DESC LIMIT ? OFFSET ?',
                 (cluster, cluster, application, application, limit, offset)).fetchall()
-        return {'ok': True, 'profiles': [self.get(row[0])['profile'] for row in rows]}
+        profiles = [self.get(row[0])['profile'] for row in rows]
+        if compact:
+            profiles = [{key: p[key] for key in ('profile_id', 'name', 'version', 'cluster',
+                'application', 'is_default', 'validation', 'requires_recheck')} |
+                {'confirmed': bool(p['confirmation']), 'parameters': p['definition'].get('parameters', {}),
+                 'configuration_file': p['configuration_file']}
+                for p in profiles]
+        return {'ok': True, 'profiles': profiles}
 
     def confirm(self, profile_id, review_token, confirmation_note, make_default=True):
         profile = self._read(profile_id)
@@ -131,6 +143,7 @@ class ProfileService:
         if type(make_default) is not bool:
             raise ValueError('make_default must be boolean')
         self._current(profile)
+        configuration_file(self.jobs.history, profile)
         for report_id, expected in profile['evidence_sha256'].items():
             if digest(self.store.get(report_id)) != expected:
                 raise ValueError('source evidence changed')
@@ -163,10 +176,10 @@ class ProfileService:
         if not profile['confirmation']:
             raise ValueError('profile requires user confirmation before use')
         self._current(profile)
+        _, profile['definition'] = configuration_file(self.jobs.history, profile)
         return profile
 
-    def plan(self, input_dir, profile_id=None, cluster=None, application=None,
-             parameters=None, project_root=None):
+    def _select(self, profile_id=None, cluster=None, application=None):
         if profile_id is None:
             with self.jobs.history.connect() as db:
                 row = db.execute('SELECT profile_id FROM profile_defaults WHERE cluster=? AND application=?',
@@ -177,21 +190,60 @@ class ProfileService:
         profile = self._confirmed(profile_id)
         if (cluster is not None and cluster != profile['cluster']) or (application is not None and application != profile['application']):
             raise ValueError('profile does not match requested cluster/application')
-        result = self.templates.template_plan('profile.' + profile_id, profile['cluster'], input_dir,
-                                              parameters, 1, project_root)
+        return profile
+
+    def _record_selection(self, profile, result, bindings):
         validation = profile['validation']
         evidence = profile.get('validation_evidence')
-        if evidence and evidence['probe']['parameters'] != result['run']['template']['parameters']:
+        if evidence and evidence['probe']['parameters'] != bindings:
             validation = 'unverified'
-        run_id = result['run']['run_id']
-        result['run'] = self.jobs.history.update(run_id, 'profile_selected',
-            profile={'profile_id': profile_id, 'name': profile['name'], 'version': profile['version'],
+        result['run'] = self.jobs.history.update(result['run']['run_id'], 'profile_selected',
+            profile={'profile_id': profile['profile_id'], 'name': profile['name'], 'version': profile['version'],
                      'review_token': profile['review_token'], 'validation': validation,
+                     'configuration_file': profile['configuration_file'],
                      'report_ids': profile['report_ids'],
                      'validation_report_id': evidence['report_id'] if evidence and validation == 'validated' else None})
         result['notes'] = ['Profile confirmation and recorded probe validation are separate.',
                            'Validation applies only to the recorded probe command and matching parameter bindings.']
         return result
+
+    def plan(self, input_dir, profile_id=None, cluster=None, application=None,
+             parameters=None, project_root=None):
+        profile = self._select(profile_id, cluster, application)
+        profile_id = profile['profile_id']
+        result = self.templates.template_plan('profile.' + profile_id, profile['cluster'], input_dir,
+                                              parameters, 1, project_root)
+        return self._record_selection(profile, result, result['run']['template']['parameters'])
+
+    def gaussian_plan(self, cluster, input_file, project_root, profile_id=None, parameters=None,
+                      outputs=None, changes=None, dependencies=None, allow_unresolved=False,
+                      max_input_bytes=None):
+        from .gaussian import GaussianService
+        profile = self._select(profile_id, cluster, 'gaussian')
+        if parameters is not None and not isinstance(parameters, dict):
+            raise ValueError('parameters must be an object')
+        supplied = deepcopy(parameters or {})
+        path = Path(input_file).expanduser()
+        # Standard card bindings are supplied locally, not regenerated by the agent.
+        declarations = profile['definition'].get('parameters', {})
+        for key, value in {'input': path.name, 'stem': path.stem}.items():
+            if key in declarations:
+                supplied.setdefault(key, value)
+        effective, bindings = bind(profile['definition'], supplied)
+        if dependencies is not None and (not isinstance(dependencies, list) or
+                                         any(not isinstance(item, str) for item in dependencies)):
+            raise ValueError('dependencies must be a list of relative files')
+        files = effective.get('input_files', [])
+        if path.name not in files:
+            raise ValueError('Gaussian profile input_files must select the requested card explicitly')
+        result = GaussianService(self.jobs).prepare(cluster, input_file, project_root, effective['spec'],
+            effective['outputs'] if outputs is None else outputs, changes,
+            sorted(set(files) - {path.name} | set(dependencies or [])), allow_unresolved,
+            effective.get('max_input_bytes') if max_input_bytes is None else max_input_bytes,
+            template_options={key: effective[key] for key in ('script_name', 'output_exclude', 'input_exclude') if key in effective},
+            template_context={'name': 'profile.' + profile['profile_id'], 'version': 1,
+                              'parameters': bindings})
+        return self._record_selection(profile, result, bindings)
 
     def validate(self, profile_id, command=None, parameters=None, run_id=None):
         profile = self._confirmed(profile_id)

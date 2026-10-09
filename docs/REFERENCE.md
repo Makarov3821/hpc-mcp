@@ -10,16 +10,16 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 | --- | --- |
 | `cluster_probe` | 必填 ssh_host；scheduler=null、work_root=null、paths=null、module_avail=true、max_module_bytes=32768、timeout=30、cluster=null、queue_details=false。SSH 别名校验与普通连接一致；timeout 1..300，模块输出限制 1024..262144 字节，paths 最多 64 个明确的远程绝对路径。cluster 指定时复用既有可信登录初始化与连接参数，SSH 目的地必须一致。返回持久 report_id、候选调度器、队列、模块候选、路径检查与待补信息；不修改配置。 |
 | `onboarding_report(report_id)` | 读取并校验不可变探测／脚本／验证报告，不访问 SSH。 |
-| `profile_draft(name, cluster, application, definition, report_ids=null)` | 保存不可变待审版本，definition 使用 template_import 的 schema；report_ids 最多 32 个，关联来源、校验值、缺失项和未解析项。名称／应用标识 1..100 字符，字母数字开头，其余允许点、下划线、连字符。返回 review_token；尚不可用于准备任务。 |
+| `profile_draft(name, cluster, application, definition, report_ids=null)` | 保存不可变待审版本，definition 使用 template_import 的 schema；report_ids 最多 32 个，关联来源、校验值、缺失项和未解析项。名称／应用标识 1..100 字符，字母数字开头，其余允许点、下划线、连字符。返回 review_token 和 configuration_file，执行 JSON 位于 state/profiles；尚不可用于准备任务。 |
 | `profile_confirm(profile_id, review_token, confirmation_note, make_default=true)` | 用户确认后保存 exact draft 的确认记录并创建固定 version=1 的内部模板；note 为非空、最多 4096 字符，记录用户对配置和未解析项的确认。默认绑定 cluster/application；重复确认不创建模板新版本。不能验证或提交作业。 |
 | `profile_get(profile_id)` | 返回定义、确认、来源和最近验证证据；本地集群设置变化标记 requires_recheck 与 stale。远程软件变化仍需显式复验。 |
-| `profile_list(cluster=null, application=null, limit=50, offset=0)` | 分页列出各版本及默认绑定，limit 1..500，offset 非负。 |
-| `profile_plan(input_dir, profile_id=null, cluster=null, application=null, parameters=null, project_root=null)` | 指定 profile_id，或选择 cluster/application 的已确认默认配置。准备一项任务，固定定义与参数；历史附 profile_id、版本、review_token、来源和验证范围。配置发生变化需重新建档确认；不提交。 |
+| `profile_list(cluster=null, application=null, limit=50, offset=0, compact=true)` | 分页列出版本、默认绑定、配置路径和参数声明，limit 1..500，offset 非负；compact=false 返回完整定义。 |
+| `profile_plan(input_dir, profile_id=null, cluster=null, application=null, parameters=null, project_root=null, compact=true)` | 指定 profile_id，或选择 cluster/application 的已确认默认配置。准备一项任务，固定定义与参数；历史附 profile_id、版本、review_token、来源和验证范围。配置发生变化需重新建档确认；不提交。compact=true 返回短回执，完整快照用 job_get 或 compact=false。 |
 | `profile_validate(profile_id, command=null, parameters=null, run_id=null)` | command 必须是用户核对的小型 argv，parameters 为模板绑定；只准备 probe。传 run_id 时不能再传 command／parameters：查询已准备验证作业的状态，成功终态后同步日志并记录证据。 |
 
 探测只使用登录信息、调度命令定位、队列查询和具体路径 test；软件发现最多执行一次 `module avail`。没有模块系统、查询失败、超限或信息不完整均保持未知；不递归列目录、扫描安装位置、自动加载候选模块或执行用户提交器。`queue_details=true` 附加固定的 `bqueues -l`／`scontrol show partition` 原始诊断证据，不推断账户／QOS 权限或推荐核数。未知站点策略请用户补充。
 
-配置关联和确认保存在状态 SQLite，报告校验且不可变。手动配置可不带报告；附带的报告需要与目标 SSH 目的地一致。confirmation_note 是 agent 对外部用户确认的记录，MCP 无法独立证明用户确实回复；agent 不得自行填充确认。内部模板名为 `profile.<profile_id>`，准备始终固定版本 1；改变定义创建新 profile 草案，不改写已有版本。
+配置关联和确认保存在状态 SQLite，执行定义同时保存为 state/profiles/<profile_id>.json。准备时读取并核对已确认定义；旧数据库配置首次访问时导出 JSON。修改执行方式须编辑副本、导入新草案并确认，不直接修改已确认 JSON。报告校验且不可变。手动配置可不带报告；附带的报告需要与目标 SSH 目的地一致。confirmation_note 是 agent 对外部用户确认的记录，MCP 无法独立证明用户确实回复；agent 不得自行填充确认。内部模板名为 `profile.<profile_id>`，准备始终固定版本 1；改变定义创建新 profile 草案，不改写已有版本。
 
 验证使用临时本地 marker 创建独立输入快照，临时源目录随准备结束清理，长期数据仍在 agent 状态目录。作业按有效资源、初始化、启动器和容器运行小型 command，不上传应用输入；替换应用重定向为 validation.log／validation.err。环境需要 Bash、cat、hostname；scratch 中的持久输出仍写在 run 目录。先检查脚本和资源，授权后通过 job_submit 提交；网络响应不明沿用 job_recover。
 
@@ -278,7 +278,7 @@ CLI：monitor-watch RUN_ID... [--no-auto-sync] [--sync-options JSON] [--cleanup-
 | 工具 | 参数／行为 |
 | --- | --- |
 | `gaussian_inspect` | `input_file`；只读最多 4 MiB 的 `.gjf`／`.com`，返回 SHA-256、分段、字段行号、确定性、资源和候选输出 |
-| `gaussian_prepare` | `cluster,input_file,project_root,spec,outputs,changes?,dependencies?,allow_unresolved=false,max_input_bytes?`；只准备一个 run，提交使用 `job_submit` |
+| `gaussian_prepare` | `cluster,input_file,project_root,spec=null,outputs=null,changes?,dependencies?,allow_unresolved=false,max_input_bytes?,profile_id=null,parameters=null,compact=true`；省略 spec 时加载 cluster/gaussian 默认配置，input/stem 自动绑定；指定 spec 时必须给 outputs，不能混用 profile_id/parameters。默认不改卡，短回执不重复脚本／分析；完整信息用 compact=false 或 job_get。只准备一个 run，提交使用 job_submit |
 | `gaussian_result` | `run_id,log_path?,max_bytes=1048576`；必须先完成所选输出同步，只读取最新下载清单中的日志并核对哈希 |
 
 `spec` 同生成器，可通过 `output_directories` 声明相对输出目录；Gaussian 自动补 checkpoint 父目录。默认 stdin 为卡名、stdout 为同名 `.log`。`outputs` 必须明确，`dependencies` 是相对输入列表。`changes` 只接受 cpus 正整数、memory 单位字符串、paths 对象；paths 的键可以是原始值或 `chk:原始值`／`oldchk:原始值`，值是执行目录内的相对路径。改写仅在快照内发生，各 Link1 段使用显式资源改写，并返回 diff、原始／有效哈希。原卡另存于 run_id/original-input/，application.original_snapshot 给出位置；original_manifest 记录校验值，原始副本不上传。snapshot 清理同时涵盖原始与有效快照。

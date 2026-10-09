@@ -26,7 +26,8 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 <agent 数据目录>/hpc-mcp/
 ├── repo/                 # Git checkout；专用虚拟环境为 repo/.venv/
 ├── clusters.toml         # 集群连接配置
-└── state/                # 历史、运行配置、输入快照、监控记录
+└── state/                # 历史、输入快照、监控记录
+    └── profiles/*.json   # MCP 直接加载的应用执行配置
 
 <项目 A>/
 ├── B/test1.gjf           # 原始输入；输出按选择回到 B/
@@ -99,6 +100,44 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 4. 向用户展示完整定义、有效默认资源、环境顺序、输入输出和未解析项。用户确认后，调用 `profile_confirm(profile_id, review_token, confirmation_note)`，记录确认并设置该集群／应用的默认配置。确认不表示计算节点验证通过。
 5. `profile_validate(profile_id, command=[用户确认的短验证命令], parameters=参数)` 只准备小作业，使用该配置的资源、环境和启动器；先展示渲染脚本及资源，用户授权后才调用 `job_submit`。随后用 `profile_validate(profile_id, run_id=编号)` 查询状态、回传有限大小的日志并记录验证证据。排队、失败或证据不足不会标为验证通过。
 6. 日常使用 `profile_plan(input_dir, cluster, application, parameters, project_root)` 准备独立任务，再用已有提交、状态与同步工具执行。默认配置固定模板版本和来源；单个任务覆盖只能使用声明参数。Gaussian 卡先用 `gaussian_inspect` 核对核数、内存和 checkpoint，需改写时仍用 Gaussian 专用辅助。
+
+### 学习脚本后保存为执行配置
+
+用户让 agent “学习 qg16”或其他提交器时，完成标准是**规则已进入 MCP 的执行配置并设为默认**。一次静态分析之后，由 agent 将可用规则整理为 JSON：队列、调度资源、软件初始化、命令、输入输出规则与参数默认值。使用 profile_draft 保存并展示，用户确认后 profile_confirm(make_default=true) 激活。未知动态逻辑需明确补充，不执行原提交器，也不以生成 Markdown 代替配置。
+
+应用配置文件保存在 `state/profiles/<profile_id>.json`，草案／确认返回 configuration_file。SQLite 保存版本、来源、默认选择和历史关系，MCP 在准备任务时直接加载并校验 JSON；agent 不必每次重读 qg16、Markdown 或完整配置。profile_list 默认返回简短目录和参数声明，需要审阅时才调用 profile_get。
+
+学习 qg16 时，应用标识使用 `gaussian`，配置名称可以是 `qg16`。JSON 定义可从 [Gaussian 配置示例](examples/profiles/gaussian-lsf.json) 调整；`input`、`stem` 参数在后续调用中由 MCP 根据输入卡自动绑定。已有默认配置后，只需：
+
+```json
+{
+  "cluster": "lab",
+  "input_file": "/ABS/A/B/test1.gjf",
+  "project_root": "/ABS/A"
+}
+```
+
+将以上参数交给 gaussian_prepare：MCP 自动使用保存的资源、环境和输出规则，返回简短准备回执，job_submit 仍独立提交。CLI 对应：
+
+```bash
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state gaussian-prepare lab /ABS/A/B/test1.gjf --project-root /ABS/A
+```
+
+输入卡由 agent 事先规范，默认不改写卡片。CPU／内存与执行资源矛盾时报告错误，不暗中补改。任务需要覆盖资源时只传声明的 parameters；明确传 spec 则使用本次完整配置，不能同时选择 profile_id／parameters。准备回执保留任务编号、配置版本、有效资源和输入差异；完整快照由 job_get 查看，或使用 compact=false（CLI --no-compact）。
+
+调整应用运行方式时，编辑 JSON **副本**，通过 profile_draft 或 CLI profile-draft 导入为新版本，核对后确认并设为默认；后续准备自动采用新版本，已准备任务保持原配置。不要直接修改已确认版本的 JSON：校验发现变化会拒绝使用，避免历史任务的规则被悄悄改写。集群连接设置仍由 clusters.toml／cluster_configure 管理。示例：
+
+```bash
+# CONFIG_COPY.json 是由 agent 在安装数据目录中整理的新版 JSON 定义。
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state profile-draft qg16 lab gaussian /ABS/CONFIG_COPY.json
+# 用户核对配置后：
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state profile-confirm PROFILE_ID REVIEW_TOKEN --confirmation-note '用户确认了新版执行配置'
+```
+
+此流程复用机器配置，省去日常解释脚本和重复传输环境定义；工具调用与必要的任务回执仍有 token 开销。复杂条件生成、packing 等旧脚本行为不会因“学习”自动获得完整兼容。
 
 CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）：
 
@@ -303,7 +342,7 @@ MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_no
 
 ### Gaussian 单任务与应用结果
 
-agent 先调用 `gaussian_inspect(input_file)`，读取 Link0、Link1、CPU／内存、checkpoint 引用和候选输出。报告保留行号及未解析项；不扫描或提交其他卡，不猜测全部依赖。再用 `gaussian_prepare` 创建独立计划，确认后通过原有 `job_submit` 提交。
+agent 先调用 `gaussian_inspect(input_file)`，读取 Link0、Link1、CPU／内存、checkpoint 引用和候选输出。报告保留行号及未解析项；不扫描或提交其他卡，不猜测全部依赖。再用 `gaussian_prepare` 创建独立计划：优先复用已确认的 Gaussian 默认配置，首次使用时也可明确传 spec 与 outputs。确认后通过原有 `job_submit` 提交。
 
 ```bash
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state gaussian-inspect /A/B/test1.gjf
@@ -485,7 +524,7 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-当前完整测试共 180 项，包含工作流限流、依赖交接、恢复、用量缺失处理、Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、56 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+当前完整测试共 186 项，包含工作流限流、依赖交接、恢复、用量缺失处理、Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、56 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
 当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。批量并发控制、任务依赖和用量统计已有实现；数组及复杂 Python 入口完整兼容仍待开发，packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 
