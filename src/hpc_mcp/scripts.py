@@ -44,7 +44,7 @@ def script_generate(scheduler: str, spec: dict) -> dict:
     """Return a script and effective settings without reading or writing input files."""
     if scheduler not in ("lsf", "slurm"):
         raise ValueError("scheduler must be lsf or slurm")
-    allowed = {"command", "resources", "environment", "init_scripts", "stdin", "stdout", "stderr"}
+    allowed = {"command", "resources", "environment", "init_scripts", "stdin", "stdout", "stderr", "output_directories"}
     if not isinstance(spec, dict) or set(spec) - allowed:
         raise ValueError("unknown script spec settings")
     command = spec.get("command")
@@ -124,12 +124,16 @@ def script_generate(scheduler: str, spec: dict) -> dict:
     # No trailing cleanup command can hide the program's exit status.
     parents = sorted({str(PurePosixPath(paths[key]).parent) for key in ("stdout", "stderr")
                       if key in paths and str(PurePosixPath(paths[key]).parent) != "."})
+    requested = spec.get("output_directories", [])
+    if not isinstance(requested, list):
+        raise ValueError("output_directories must be a list of relative directories")
+    parents = sorted(set(parents) | {relative_path(p) for p in requested})
     directories = ["mkdir -p -- " + shlex.join(parents)] if parents else []
     lines = ["#!/bin/bash", *directives, "", "set -euo pipefail", *sources, *exports,
              *directories, invocation, ""]
     return {"ok": True, "scheduler": scheduler, "script": "\n".join(lines),
             "spec": {"command": command, "resources": asdict(resources),
-                     "environment": environment, "init_scripts": init_scripts, **paths},
+                     "environment": environment, "init_scripts": init_scripts, "output_directories": requested, **paths},
             "warnings": warnings,
             "notes": ["Single node, single task; cpus are shared-memory slots. No MPI/GPU/array generation.",
                       "Run identity, cwd and scheduler logs are assigned by job_submit.",

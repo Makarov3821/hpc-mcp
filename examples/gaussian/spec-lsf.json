@@ -1,0 +1,12 @@
+{
+  "command": ["g16"],
+  "resources": {
+    "cpus": 2,
+    "queue": "Gaussian",
+    "memory_mb": 1024,
+    "memory_scope": "lsf_reservation",
+    "time_minutes": 30
+  },
+  "init_scripts": [],
+  "environment": {}
+}

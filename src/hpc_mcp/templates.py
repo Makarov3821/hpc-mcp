@@ -152,7 +152,11 @@ class TemplateService:
                               project_root: str | None = None, input_files: list[str] | None = None,
                               script_name: str = "hpc-mcp-job.sh", output_exclude: list[str] | None = None,
                               input_exclude: list[str] | None = None, max_input_bytes: int | None = None,
-                              context: dict | None = None) -> dict:
+                              context: dict | None = None,
+                              input_overrides: dict[str, str] | None = None,
+                              input_sources: dict[str, str] | None = None,
+                              original_inputs: dict[str, str] | None = None,
+                              application_context: dict | None = None) -> dict:
         if cluster not in self.jobs.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         script_name = relative_path(script_name)
@@ -178,7 +182,7 @@ class TemplateService:
             raise ValueError("existing output would be snapshotted as input; use an explicit input_files list")
         prepared = self.jobs.job_prepare(cluster, input_dir, script_name, outputs, "filtered",
             output_exclude, input_exclude, max_input_bytes, project_root, input_files,
-            rendered["script"], context)
+            rendered["script"], context, input_overrides, input_sources, original_inputs, application_context)
         prepared["rendered"] = rendered
         return prepared
 

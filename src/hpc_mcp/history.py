@@ -87,7 +87,12 @@ class History:
     @contextmanager
     def lock(self, run_id: str):
         self.get(run_id)  # Validate before using an ID in a path.
-        path = self.root / run_id / "operation.lock"
+        root = self.root / run_id
+        if root.is_symlink() or not root.resolve().is_relative_to(self.root):
+            raise ValueError("registered run directory cannot be a symlink or escape state")
+        path = root / "operation.lock"
+        if path.is_symlink():
+            raise ValueError("operation lock cannot be a symlink")
         with path.open("a") as file:
             try:
                 fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)

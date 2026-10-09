@@ -1,6 +1,6 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；22 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；33 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
 
 ## 单任务脚本生成
 
@@ -13,6 +13,7 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 | `environment` | 环境变量名到字符串值的对象，默认空对象 |
 | `init_scripts` | 计算节点上可信初始化文件的绝对路径数组，默认空数组 |
 | `stdin`／`stdout`／`stderr` | 可选的执行目录内相对文件路径；不允许绝对路径或 `..` |
+| `output_directories` | 可选相对目录数组，在执行时 mkdir；默认空数组 |
 
 | 资源字段 | 语义 |
 | --- | --- |
@@ -113,10 +114,10 @@ CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-
 
 输入目录、输入快照、历史数据库与文件系统根不能用作覆盖目标。目标中的符号链接被拒绝。
 内部 `.hpc-mcp-*` 和旧版 `.xn02-*` 回执始终被排除；符号链接不下载，特殊文件不作为结果文件支持。这些是接口边界，不能通过 include 模式关闭。
-失败下载保留 staging；跨尝试续传和输出大小上限尚未实现。全部下载可能很大，应根据作业结果选择模式和超时。
+失败下载保留 staging；续传和大小上限见下文。全部下载可能很大，先预览并设置相应上限。
 
 `final=true` 需要本次成功查询到终止状态且传输成功；运行中或查询失败返回 partial。它表示所选文件传输完成，不保证应用计算正确或覆盖执行目录之外的输出。
-输出默认不自动写回原输入目录；远程结果不会被清理。
+非项目旧作业默认不写回输入目录；项目作业默认归位。同步不会自动清理远程结果，远程清理是独立工具。
 
 ## CLI 对应选项
 
@@ -154,6 +155,59 @@ SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理�
 ## 更新检查与安装维护
 
 - `update_check(force=false, max_age_seconds=86400, timeout=10)`：每个新会话调用一次，向用户报告可用更新。公开 HTTPS API 比较本地提交和官方仓库 main；不访问 SSH。`force` 跳过缓存，缓存最长 604800 秒，0 禁用复用；每次请求超时 1..60 秒，最多两个请求。GitHub 限流或离线返回 `ok=false`、`update_available=null`，不覆盖上次成功缓存。
-- `update_plan` 接受同样参数，重新读取本地 Git 状态后返回 `check`、`blockers`、`commands`、`restart_required`。每条命令包含 `argv`（优先使用）、`cwd` 和供人阅读的 `display`。只为干净的官方 main editable/source 安装生成固定提交的快进方案；本地超前、分叉、其他 origin 或普通 wheel 安装需要人工处理。已经最新时 commands 为空。
+- `update_plan` 接受同样参数，重新读取本地 Git 状态后返回 `check`、`blockers`、`commands`、`restart_required`。每条命令包含 `argv`（优先使用）、`cwd` 和供人阅读的 `display`。只为干净的官方 main editable/source 安装生成固定提交的快进方案，存在 queued／running 同步操作时阻止更新（先查询／等待完成）；本地超前、分叉、其他 origin 或普通 wheel 安装需要人工处理。已经最新时 commands 为空。
 - 工具不执行更新。停止 MCP 连接后再次核对 Git 工作区，备份配置和完整状态目录，依次执行命令，失败即停。重启使用相同绝对配置、状态路径，然后验证工具发现和历史读取。远程作业继续由调度器运行，无需重新提交。
 - `settings_get.updates` 暴露默认检查参数及 `cached_check`。缓存是历史结果，可能过期；需要及时判断时调用 `update_check`。状态目录只多出一个小型 JSON 缓存，不修改任务数据。不自动配置定时任务或客户端文件，也不自动安装更新。
+
+## Gaussian 接口
+
+| 工具 | 参数／行为 |
+| --- | --- |
+| `gaussian_inspect` | `input_file`；只读最多 4 MiB 的 `.gjf`／`.com`，返回 SHA-256、分段、字段行号、确定性、资源和候选输出 |
+| `gaussian_prepare` | `cluster,input_file,project_root,spec,outputs,changes?,dependencies?,allow_unresolved=false,max_input_bytes?`；只准备一个 run，提交使用 `job_submit` |
+| `gaussian_result` | `run_id,log_path?,max_bytes=1048576`；必须先完成所选输出同步，只读取最新下载清单中的日志并核对哈希 |
+
+`spec` 同生成器，可通过 `output_directories` 声明相对输出目录；Gaussian 自动补 checkpoint 父目录。默认 stdin 为卡名、stdout 为同名 `.log`。`outputs` 必须明确，`dependencies` 是相对输入列表。`changes` 只接受 cpus 正整数、memory 单位字符串、paths 对象；paths 的键可以是原始值或 `chk:原始值`／`oldchk:原始值`，值是执行目录内的相对路径。改写仅在快照内发生，各 Link1 段使用显式资源改写，并返回 diff、原始／有效哈希。原卡另存于 run_id/original-input/，application.original_snapshot 给出位置；original_manifest 记录校验值，原始副本不上传。snapshot 清理同时涵盖原始与有效快照。
+
+检查 `%chk`、`%oldchk`、`%mem`、`%nprocshared`／`%nproc`；整数内存值支持 KB／MB／GB／TB 和 KW／MW／GW／TW，无单位按 8 字节 word，倍率按 1024。未知、动态或越界字段报告 unresolved，不求值；`allow_unresolved=true` 表示调用方已检查限制。未声明的 Gaussian 默认环境设置不推断。
+
+本地 `%oldchk` 必须存在，显式映射的源也须在项目内；前序 Link1 产生的 checkpoint 不作为外部输入。首次 checkpoint-based route 需要明确旧 checkpoint，读入与输出应分开。路径不自动跟随环境变量、远程 home 或 symlink。资源检查覆盖显式 CPU 与 Slurm 内存冲突；LSF 预留作用范围及软件开销须核对站点。
+
+`application_result` 独立于调度状态。日志使用完整流式扫描、SHA-256 校验和有上限的证据列表；`max_bytes` 为返回证据文本上限（1024..16777216），不是扫描文件大小上限。异常终止为 failed；正常终止数量匹配计划 Link1 段且日志末尾正常终止时 succeeded；否则 unknown。任意非 Gaussian 任务需显式指定其 Gaussian log，默认 stdout.log；工具提供终止证据，不验证所有化学结果。
+
+## 同步预检、续传与异步操作
+
+`job_sync` 增加 `resume?`、`max_file_bytes?`、`max_total_bytes?`、`reserve_bytes?` 和 `stable_only=false`。除 stable_only 外省略使用集群默认值：
+
+| 集群设置 | 默认值 | 约束 |
+| --- | --- | --- |
+| `max_output_file_bytes` | 10737418240（10 GiB） | 正整数 |
+| `max_output_bytes` | 21474836480（20 GiB） | 正整数 |
+| `sync_reserve_bytes` | 268435456（256 MiB） | 非负整数 |
+| `sync_resume` | true | boolean |
+| `input_cache` | false | boolean；影响下一次准备，不迁移已有快照 |
+
+`job_sync_preview(run_id,mode?,includes?,excludes?,max_file_bytes?,max_total_bytes?,reserve_bytes?,timeout?)` 使用 rsync dry-run，选择语义与实际传输相同；返回 files/path/size/mtime、count、bytes、free_bytes、required_free_bytes 和 blockers。只查询远程，临时本地预览目录自动删除。元数据输出受 `ssh_output_limit` 限制，超过时失败，不把截断清单当完整结果。
+
+同步自动执行预检，估算两倍所选大小加 reserve 的空间需求；目标和暂存不同文件系统时分别检查。传输中周期性检查暂存占用，超过总量上限两倍则终止进程，增长可能有检查间隔内的超量，非硬磁盘配额。rsync 单文件限制及下载后的路径／大小复核避免静默遗漏被当作成功。
+
+失败暂存只有在完整选项及源清单 fingerprint 一致时复用；拒绝 symlink，私有 `.hpc-mcp-transfer-partial` 从不安装成结果。源变化或选项变化创建新暂存。传输完成后重新查询状态并比对源大小／mtime，再安装结果；这不是远程原子快照，元数据不变的并发写入仍可能无法识别。`stable_only=true` 要求前后都确认终态，否则保留缓存返回失败。默认允许运行中同步，但结果是 partial。`sync_transfer_stats` 可报告 rsync 统计的 transferred_bytes／reused_bytes；`sync_progress` 报告暂存或已安装大小，不代表网络实时速度。
+
+`job_sync_start(run_id,options={})` 接受公开 job_sync 参数对象，启动独立进程，返回持久 operation_id。`job_sync_operation(operation_id)` 返回 queued/running/succeeded/failed/interrupted、progress 和 result/error。一个 run 仅允许一个已登记活动操作；中断后先查询再重试。重启 MCP 不终止既有 worker；机器关机不会继续传输，未结束操作需核查后恢复，不会自动提交计算任务。操作历史保存配置快照，不存 SSH 密钥；run.last_sync_operation 保存最近操作编号，agent 重启后可从 job_get 找回。
+
+CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max-file-bytes`、`--max-total-bytes`、`--reserve-bytes`、`--stable-only`；`sync-start RUN_ID --options JSON`，`sync-operation OPERATION_ID` 查询状态。
+
+## 存储与远程清理
+
+| 工具 | 默认参数与边界 |
+| --- | --- |
+| `job_cache_cleanup` | 既有失败暂存清理，older_than_seconds=86400，dry_run=true；不删除输入／结果 |
+| `job_storage_cleanup` | run_id,categories=["sync_history"],older_than_seconds=86400,dry_run=true；categories 可选 snapshot／sync_history／old_outputs，只处理终态且同步 complete 的任务 |
+| `input_cache_cleanup` | older_than_seconds=86400,max_cache_bytes=10737418240,dry_run=true；按年龄或容量从最旧的共享 blob 开始清理 |
+| `job_remote_cleanup` | run_id,dry_run=true；重新确认终态、验证非空已下载结果哈希和原提交回执，检查远程 canonical 路径后才允许删除 |
+
+本地清理保留数据库、manifest、模板和应用证据元数据，保护最新结果及项目中已归位的输出。删除 snapshot 会记录 snapshot_removed，之后无法从这些文件重放；旧输出／归档删除不可恢复。所有本地清理受操作锁约束，拒绝路径越界和 symlink。
+
+开启 input_cache 后，输入先以 SHA-256 存为 blob，再独立复制／reflink 到快照；不 hardlink 原输入、缓存或其他快照，修改一份不会污染另一份。缓存复用前校验内容；不支持 CoW 时会额外复制占用磁盘。清理缓存不删除快照，维护事件写入 events 的 maintenance 标识。默认不启用，也不创建后台计时器。
+
+远程清理默认预览目录用量。dry_run=false 永久删除本 run 中未回传的文件，先确认已选择全部需要保留的数据；成功记录 remote_removed，不修改其他目录。同步完成只表示所选文件完整，并不表示已下载所有输出。CLI `storage-cleanup RUN_ID --category ...`、`input-cache-cleanup`、`remote-cleanup RUN_ID`，对应删除需显式加 `--apply`。

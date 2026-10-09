@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 import urllib.request
+import sqlite3
+from contextlib import closing
 
 REPOSITORY = "https://github.com/Makarov3821/hpc-mcp"
 API = "https://api.github.com/repos/Makarov3821/hpc-mcp"
@@ -152,6 +154,16 @@ class UpdateService:
                 blockers.append("Commit or stash local changes, including untracked files, before updating.")
             if check.get("comparison") in ("behind", "diverged", "unknown"):
                 blockers.append("Local history needs review; automatic fast-forward plan unavailable.")
+        database = self.root / "history.sqlite3"
+        if database.exists():
+            try:
+                with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+                    if db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='operations'").fetchone():
+                        active = db.execute("SELECT id FROM operations WHERE json_extract(data,'$.state') IN ('queued','running') LIMIT 1").fetchone()
+                        if active:
+                            blockers.append(f"Finish or inspect sync operation {active[0]} before updating; workers survive MCP shutdown.")
+            except sqlite3.Error as error:
+                blockers.append(f"Cannot verify sync operation state: {error}")
         commands = []
         if not blockers and check.get("update_available"):
             root = Path(local["checkout"])

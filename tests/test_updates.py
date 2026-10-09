@@ -60,7 +60,9 @@ class UpdateTests(unittest.TestCase):
     def test_pinned_plan_does_not_execute_commands_or_touch_job_data(self):
         self.updates.root.mkdir()
         history = self.updates.root / "history.sqlite3"
-        history.write_bytes(b"untouched")
+        from hpc_mcp.history import History
+        History(self.updates.root)
+        original_history = history.read_bytes()
         with self.remote(), patch("hpc_mcp.updates.subprocess.run") as process:
             plan = self.updates.plan()
         process.assert_not_called()
@@ -69,7 +71,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(plan["commands"][0]["argv"], ["git", "fetch", "origin", "b" * 40])
         self.assertEqual(plan["commands"][1]["argv"], ["git", "merge", "--ff-only", "b" * 40])
         self.assertEqual(plan["commands"][2]["argv"][0], "/venv/bin/python")
-        self.assertEqual(history.read_bytes(), b"untouched")
+        self.assertEqual(history.read_bytes(), original_history)
 
     def test_block_dirty_fork_branch_and_divergence(self):
         for change in ({"dirty": True}, {"origin": "https://example.com/fork"},
@@ -136,3 +138,16 @@ class UpdateTests(unittest.TestCase):
                                  str(self.updates.root), "update-check"],
                                 capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(result.stdout)["cached"])
+
+    def test_active_sync_workers_block_installation_update(self):
+        from hpc_mcp.history import History
+        from hpc_mcp.operations import initialize
+        history = History(self.updates.root)
+        initialize(history)
+        with history.connect() as db:
+            db.execute("INSERT INTO operations VALUES (?,?,?)", ("op_active", "run", '{"state":"running"}'))
+        with self.remote():
+            plan = self.updates.plan()
+        self.assertFalse(plan["ok"])
+        self.assertEqual(plan["commands"], [])
+        self.assertIn("op_active", " ".join(plan["blockers"]))

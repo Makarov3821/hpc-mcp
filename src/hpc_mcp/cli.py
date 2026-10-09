@@ -25,6 +25,46 @@ def main():
         update.add_argument("--force", action="store_true")
         update.add_argument("--max-age-seconds", type=int, default=86400)
         update.add_argument("--timeout", type=int, default=10)
+    sub.add_parser("gaussian-inspect").add_argument("input_file")
+    gaussian = sub.add_parser("gaussian-prepare")
+    gaussian.add_argument("cluster")
+    gaussian.add_argument("input_file")
+    gaussian.add_argument("spec_file")
+    gaussian.add_argument("--project-root", required=True)
+    gaussian.add_argument("--output", action="append", required=True)
+    gaussian.add_argument("--changes", default="{}", help="JSON snapshot-only cpus/memory/paths changes")
+    gaussian.add_argument("--dependency", action="append")
+    gaussian.add_argument("--allow-unresolved", action="store_true")
+    gaussian.add_argument("--max-input-bytes", type=int)
+    result = sub.add_parser("gaussian-result")
+    result.add_argument("run_id")
+    result.add_argument("--log-path")
+    result.add_argument("--max-bytes", type=int, default=1048576)
+    background = sub.add_parser("sync-start")
+    background.add_argument("run_id")
+    background.add_argument("--options", default="{}", help="JSON job_sync options")
+    sub.add_parser("sync-operation").add_argument("operation_id")
+    storage = sub.add_parser("storage-cleanup")
+    storage.add_argument("run_id")
+    storage.add_argument("--category", action="append", choices=("snapshot", "sync_history", "old_outputs"))
+    storage.add_argument("--older-than-seconds", type=int, default=86400)
+    storage.add_argument("--apply", action="store_true")
+    cache = sub.add_parser("input-cache-cleanup")
+    cache.add_argument("--older-than-seconds", type=int, default=86400)
+    cache.add_argument("--max-cache-bytes", type=int, default=10737418240)
+    cache.add_argument("--apply", action="store_true")
+    remote = sub.add_parser("remote-cleanup")
+    remote.add_argument("run_id")
+    remote.add_argument("--apply", action="store_true")
+    preview = sub.add_parser("sync-preview")
+    preview.add_argument("run_id")
+    preview.add_argument("--mode", choices=("all", "filtered"))
+    preview.add_argument("--include", action="append")
+    preview.add_argument("--exclude", action="append")
+    preview.add_argument("--max-file-bytes", type=int)
+    preview.add_argument("--max-total-bytes", type=int)
+    preview.add_argument("--reserve-bytes", type=int)
+    preview.add_argument("--timeout", type=int)
     generate = sub.add_parser("script-generate", help="Preview a script from a JSON spec file")
     generate.add_argument("scheduler", choices=("lsf", "slurm"))
     generate.add_argument("spec_file")
@@ -84,6 +124,11 @@ def main():
     sync.add_argument("--checksum", action=argparse.BooleanOptionalAction, default=None)
     sync.add_argument("--compress", action=argparse.BooleanOptionalAction, default=None)
     sync.add_argument("--timeout", type=int)
+    sync.add_argument("--resume", action=argparse.BooleanOptionalAction, default=None)
+    sync.add_argument("--max-file-bytes", type=int)
+    sync.add_argument("--max-total-bytes", type=int)
+    sync.add_argument("--reserve-bytes", type=int)
+    sync.add_argument("--stable-only", action="store_true")
     config_get = sub.add_parser("config-get")
     config_get.add_argument("cluster")
     config_set = sub.add_parser("config-set")
@@ -99,6 +144,10 @@ def main():
     logs.add_argument("--lines", type=int, default=100)
     args = parser.parse_args()
     try:
+        if args.action == "gaussian-inspect":
+            from .gaussian import gaussian_inspect
+            print(json.dumps(gaussian_inspect(args.input_file), ensure_ascii=False, indent=2))
+            return
         if args.action in ("update-check", "update-plan"):
             from .updates import UpdateService
             updates = UpdateService(args.state_dir)
@@ -113,7 +162,7 @@ def main():
             data = script_generate(args.scheduler, json.loads(Path(args.spec_file).expanduser().read_text()))
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return
-        clusters = {} if args.action in ("config-set", "template-import", "template-list", "template-get") \
+        clusters = {} if args.action in ("config-set", "template-import", "template-list", "template-get", "sync-operation", "storage-cleanup", "input-cache-cleanup", "gaussian-result") \
             and not Path(args.config).exists() \
             else load_config(args.config)
         config = ConfigManager(args.config, clusters)
@@ -135,7 +184,28 @@ def main():
         else:
             from .jobs import JobService
             jobs = JobService(service.clusters, args.state_dir)
-            if args.action.startswith("template-") or args.action == "prepare-generated":
+            if args.action == "gaussian-prepare":
+                from .gaussian import GaussianService
+                data = GaussianService(jobs).prepare(args.cluster, args.input_file, args.project_root,
+                    json.loads(Path(args.spec_file).read_text()), args.output, json.loads(args.changes),
+                    args.dependency, args.allow_unresolved, args.max_input_bytes)
+            elif args.action == "gaussian-result":
+                from .gaussian import GaussianService
+                data = GaussianService(jobs).result(args.run_id, args.log_path, args.max_bytes)
+            elif args.action == "sync-preview":
+                data = jobs.job_sync_preview(args.run_id, args.mode, args.include, args.exclude,
+                    args.max_file_bytes, args.max_total_bytes, args.reserve_bytes, args.timeout)
+            elif args.action == "sync-start":
+                data = jobs.job_sync_start(args.run_id, json.loads(args.options))
+            elif args.action == "sync-operation":
+                data = jobs.job_sync_operation(args.operation_id)
+            elif args.action == "storage-cleanup":
+                data = jobs.job_storage_cleanup(args.run_id, args.category, args.older_than_seconds, not args.apply)
+            elif args.action == "input-cache-cleanup":
+                data = jobs.input_cache_cleanup(args.older_than_seconds, args.max_cache_bytes, not args.apply)
+            elif args.action == "remote-cleanup":
+                data = jobs.job_remote_cleanup(args.run_id, not args.apply)
+            elif args.action.startswith("template-") or args.action == "prepare-generated":
                 from .templates import TemplateService
                 templates = TemplateService(jobs)
                 if args.action == "template-import":
@@ -163,7 +233,8 @@ def main():
                 data = jobs.job_cache_cleanup(args.run_id, args.older_than_seconds, not args.apply)
             elif args.action == "sync":
                 data = jobs.job_sync(args.run_id, args.mode, args.include, args.exclude,
-                    args.destination, args.layout, args.overwrite, args.checksum, args.compress, args.timeout)
+                    args.destination, args.layout, args.overwrite, args.checksum, args.compress, args.timeout, args.resume,
+                    args.max_file_bytes, args.max_total_bytes, args.reserve_bytes, args.stable_only)
             elif args.action == "history":
                 data = jobs.job_list(args.cluster, args.limit, args.offset)
             elif args.action == "get":

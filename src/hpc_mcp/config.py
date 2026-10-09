@@ -28,6 +28,11 @@ class Cluster:
     transfer_checksum: bool = True
     transfer_compress: bool = False
     max_input_bytes: int = 1024 ** 3
+    max_output_file_bytes: int = 10 * 1024 ** 3
+    max_output_bytes: int = 20 * 1024 ** 3
+    sync_reserve_bytes: int = 256 * 1024 ** 2
+    sync_resume: bool = True
+    input_cache: bool = False
     input_exclude: list[str] = field(default_factory=lambda: [
         ".git", ".venv", "__pycache__", ".aws", ".ssh", ".codex", ".agents", ".hpc-mcp", ".xn02",
         ".hpc-mcp-sync", "clusters.toml",
@@ -59,12 +64,14 @@ class Cluster:
             raise ValueError("sync_layout must be snapshot or direct")
         if self.sync_overwrite not in ("error", "replace", "merge"):
             raise ValueError("sync_overwrite must be error, replace or merge")
-        for flag in (self.transfer_checksum, self.transfer_compress):
+        for flag in (self.transfer_checksum, self.transfer_compress, self.sync_resume, self.input_cache):
             if type(flag) is not bool:
                 raise ValueError("transfer flags must be booleans")
-        for number in (self.max_input_bytes, self.ssh_output_limit):
+        for number in (self.max_input_bytes, self.ssh_output_limit, self.max_output_file_bytes, self.max_output_bytes):
             if type(number) is not int or number < 1:
                 raise ValueError("byte limits must be positive integers")
+        if type(self.sync_reserve_bytes) is not int or self.sync_reserve_bytes < 0:
+            raise ValueError("sync_reserve_bytes must be nonnegative")
         for patterns in (self.output_include, self.output_exclude, self.input_exclude):
             validate_patterns(patterns)
 

@@ -39,9 +39,9 @@ class LocalTransfer:
         self.fail_download = False
 
     def run(self, cluster, local, remote, download=False, patterns=None, **options):
-        if (download and self.fail_download) or (not download and self.fail_upload):
+        if (download and self.fail_download and not options.get("dry_run")) or (not download and self.fail_upload):
             return CommandResult(23, stderr="simulated transfer failure")
-        real_run = subprocess.run
+        real_run = subprocess.Popen
 
         def localize(argv, **kwargs):
             args = list(argv)
@@ -51,7 +51,7 @@ class LocalTransfer:
             args = [a[len(prefix):] if a.startswith(prefix) else a for a in args]
             return real_run(args, **kwargs)
 
-        with patch("hpc_mcp.transfer.subprocess.run", side_effect=localize):
+        with patch("hpc_mcp.transfer.subprocess.Popen", side_effect=localize):
             return Transfer().run(cluster, local, remote, download, patterns, **options)
 
 

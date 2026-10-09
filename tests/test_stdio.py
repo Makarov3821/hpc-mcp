@@ -36,7 +36,7 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 project = root / "project"
                 source = project / "B"
                 source.mkdir(parents=True)
-                (source / "test.gjf").write_text("input card\n")
+                (source / "test.gjf").write_text("%chk=test.chk\n# hf/sto-3g\n\ntitle\n\n0 1\nH 0 0 0\n\n")
                 (source / "job.sh").write_text("#!/bin/bash\ntrue\n")
                 cwd = root / "unrelated-working-directory"
                 cwd.mkdir()
@@ -55,7 +55,9 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "job_cache_cleanup",
                             "script_generate", "job_prepare_generated", "template_import",
                             "template_list", "template_get", "template_plan", "template_run",
-                            "update_check", "update_plan",
+                            "update_check", "update_plan", "gaussian_inspect", "gaussian_prepare", "gaussian_result",
+                            "job_sync_preview", "job_sync_start", "job_sync_operation",
+                            "job_storage_cleanup", "input_cache_cleanup", "job_remote_cleanup",
                         })
                         properties = tools["job_prepare"].input_schema["properties"]
                         self.assertIn("project_root", properties)
@@ -90,6 +92,19 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "scheduler": "lsf", "spec": {"command": ["true"]}})
                         self.assertFalse(preview.is_error)
                         self.assertIn("exec -- true", preview.structured_content["script"])
+                        inspected = await client.call_tool("gaussian_inspect", {"input_file": str(source / "test.gjf")})
+                        self.assertFalse(inspected.is_error)
+                        self.assertEqual(inspected.structured_content["analysis"]["candidate_outputs"], ["test.log", "test.chk"])
+                        gaussian = await client.call_tool("gaussian_prepare", {
+                            "cluster": "lab", "input_file": str(source / "test.gjf"), "project_root": str(project),
+                            "spec": {"command": ["g16"], "resources": {"cpus": 2}},
+                            "outputs": ["test.log", "test.chk"], "changes": {"cpus": 2}})
+                        self.assertFalse(gaussian.is_error, gaussian.content)
+                        self.assertTrue(gaussian.structured_content["gaussian"]["diff"])
+                        cache = await client.call_tool("input_cache_cleanup", {})
+                        self.assertFalse(cache.is_error)
+                        self.assertTrue(cache.structured_content["dry_run"])
+                        self.assertEqual(tools["job_sync"].input_schema["properties"]["resume"]["default"], None)
                         imported = await client.call_tool("template_import", {"name": "protocol-test",
                             "definition": {"scheduler": "lsf", "spec": {"command": ["true"]},
                                            "input_files": ["test.gjf"], "outputs": ["test.log"]}})

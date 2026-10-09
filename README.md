@@ -217,6 +217,54 @@ MCP 对应 `template_import(name, definition)`、`template_plan(...)`、`templat
 
 Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%nprocshared`、内存、运行时间以及计算节点的 g16 环境；续算 chk 等依赖必须加入模板输入列表。Slurm 内存区分 `job` 与 `per_cpu`；LSF 要求明确使用 `lsf_reservation`，其预留作用范围由站点配置决定，不表示硬内存限制。原 Python 提交入口和任意 Shell 脚本自动导入仍留待后续阶段。
 
+### Gaussian 单任务与应用结果
+
+agent 先调用 `gaussian_inspect(input_file)`，读取 Link0、Link1、CPU／内存、checkpoint 引用和候选输出。报告保留行号及未解析项；不扫描或提交其他卡，不猜测全部依赖。再用 `gaussian_prepare` 创建独立计划，确认后通过原有 `job_submit` 提交。
+
+```bash
+hpc-mcp gaussian-inspect /A/B/test1.gjf
+hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
+  gaussian-prepare lab /A/B/test1.gjf /ABS/hpc-mcp/examples/gaussian/spec-lsf.json \
+  --project-root /A --output test1.log --output test1.chk
+```
+
+示例中的 `lab`、队列、程序命令、计算初始化文件和资源都必须按实际集群调整；[Gaussian 示例](examples/gaussian/)提供 LSF／Slurm 两种 spec 和最小输入卡，不代表已在目标集群运行。声明 CPU 不得少于输入卡要求；Slurm 内存会检查显式冲突，LSF reservation 的作用范围仍由站点决定，Gaussian `%mem` 也不包含全部进程开销。
+
+需要改输入时显式指定 `changes`（CLI `--changes` JSON）：`cpus`、`memory`（例如 `2GB`）、`paths`。路径映射可用原始值，也可用 `oldchk:test1.chk`／`chk:test1.chk` 区分读入与输出。改写仅发生在执行快照，原始卡另存于状态目录的 `run_id/original-input/`；返回原始／有效 SHA-256 和 diff，原卡不变。跨目录旧 checkpoint 必须显式映射到执行目录内，源文件必须在项目 A 中；远程既有 checkpoint 不自动当成本地文件上传。前一 Link1 段产生的 checkpoint 不要求预先存在。
+
+同步所需日志后调用 `gaussian_result(run_id)`，读取最新同步清单中的日志、验证哈希并流式检查正常／异常终止。正常终止数量需匹配 Link1 段数，日志末尾还须有正常终止证据；数量不符或证据不足返回 unknown。应用结果单独保存为 `application_result`，不改写调度器 state；即使调度器 DONE，也可能应用 failed。额外输入、复杂指令和未解析行为必须核对；同一路径不能同时作为上传输入与计算输出。
+
+### 大文件同步与存储管理
+
+先预览，再同步；大传输优先使用独立同步操作：
+
+```bash
+hpc-mcp sync-preview RUN_ID --include '*.log' --include '*.chk' \
+  --max-file-bytes 10737418240 --max-total-bytes 21474836480
+hpc-mcp sync-start RUN_ID --options '{"includes":["*.log","*.chk"],"stable_only":true,"resume":true}'
+hpc-mcp sync-operation OPERATION_ID
+```
+
+对应 MCP 为 `job_sync_preview`、`job_sync_start`、`job_sync_operation`。后台 worker 仅执行这一次同步，不监控其他任务；本地机器仍需开机。操作和进度保存在原状态目录，MCP 重启后可以查询。失败或中断后先检查操作，再重试同步；不会重交计算任务。
+
+`job_sync` 自动预检文件选择、单文件／总量与空间。默认单文件 10 GiB、总量 20 GiB、预留 256 MiB；预检按所选大小的两倍估算暂存和安装空间，可通过集群设置或本次参数调整。大小／mtime 在传输后复查，变化或缺文件则保留暂存并拒绝安装。`stable_only=true` 要求传输前后都能确认终态；普通运行中同步保留 partial 标记。预检和周期性占用检查不是文件系统硬配额，也不能提供远程文件的原子快照。
+
+`resume` 默认开启：只有失败暂存的文件清单、时间信息和同步选项一致时才复用；rsync partial 文件可作为增量传输依据，返回 `sync_resumed` 与可用的 `sync_transfer_stats`。改变规则或源文件会新建暂存，旧缓存由清理工具处理。归位冲突时先检查已有结果，再明确选择 `overwrite=merge`，不自动覆盖输入卡。
+
+各类清理独立控制，默认预览，确认范围后才应用：
+
+```bash
+hpc-mcp cache-cleanup RUN_ID --older-than-seconds 86400
+hpc-mcp storage-cleanup RUN_ID --category snapshot --category sync_history
+hpc-mcp input-cache-cleanup --older-than-seconds 86400 --max-cache-bytes 10737418240
+hpc-mcp remote-cleanup RUN_ID
+# 在核对上述预览后，对对应命令加 --apply。
+```
+
+`job_storage_cleanup` 只处理终态且所选输出同步完成的登记作业；可删除输入快照、旧输出快照和输出归档，保留历史及最新结果。删除快照后不能从这些文件重放任务。集群 `input_cache=true` 可启用共享内容缓存和独立 CoW 快照，默认关闭；空间收益取决于文件系统，不支持 reflink 时复制会增加占用，缓存清理不删除任务快照。
+
+`job_remote_cleanup` 默认保留远程目录。应用清理需重新确认调度终态、验证已下载文件及原始提交回执，路径严格限定登记 run；**未选择回传的远程文件也会被永久删除**，必须先核对要保留的结果。所有清理均无内置定时器；常驻监控和定时整理仍属于 Phase 6。
+
 ## 7. 更新与旧版本迁移
 
 MCP 提供 `update_check(force=false, max_age_seconds=86400, timeout=10)` 和 `update_plan`（相同参数）。前者通过公开 GitHub HTTPS API 比较本地提交与上游 `main`，后者返回带 `argv`、`cwd` 的有序命令，不直接执行更新。当前版本号可能不变，因此以提交而非版本号判断更新。检查结果保存在指定状态目录的 `update-check.json`，默认一天复用；服务启动不主动联网。MCP 会向客户端提供会话检查指引，实际提示依赖 agent 调用工具，不是桌面推送通知。
@@ -226,7 +274,7 @@ MCP 提供 `update_check(force=false, max_age_seconds=86400, timeout=10)` 和 `u
 /ABS/hpc-mcp/.venv/bin/hpc-mcp --state-dir /ABS/AGENT/hpc-mcp/state update-plan --force
 ```
 
-agent 应检查 `ok`、`blockers`、`commands`；执行前停止 MCP 连接、再次核对工作区，并按 `cwd` 依次运行 `argv`，任何一步失败立即停止。计划固定检查到的提交，使用 `git fetch`、`git merge --ff-only` 与现有虚拟环境中的 pip，依赖仍遵循仓库锁定文件。有未保存改动、非 `main` 分支、非官方 origin 或分叉时不生成自动更新命令；普通非 editable 安装需按第 2 节重新安装。失败后修复问题再重启服务，不把安装失败当作更新成功。
+agent 应检查 `ok`、`blockers`、`commands`；存在 queued／running 同步 worker 时更新计划会阻止安装，先通过 `job_get` 中的 `last_sync_operation` 查询并等待结束或核查中断。执行前停止 MCP 连接、再次核对工作区，并按 `cwd` 依次运行 `argv`，任何一步失败立即停止。计划固定检查到的提交，使用 `git fetch`、`git merge --ff-only` 与现有虚拟环境中的 pip，依赖仍遵循仓库锁定文件。有未保存改动、非 `main` 分支、非官方 origin 或分叉时不生成自动更新命令；普通非 editable 安装需按第 2 节重新安装。失败后修复问题再重启服务，不把安装失败当作更新成功。
 
 旧版没有这些工具，需要先按以下命令手动更新一次。备份数据后更新；重启仍使用原来的配置、状态路径，并确认 `update_check`／`update_plan` 可用。
 
@@ -275,9 +323,9 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-用户已在真实 LSF 上完成提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、24 个工具及其参数发现、结构化结果、配置更新、脚本生成、模板保存／计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+当前 110 项测试全部通过，包含 Gaussian、增量续传、同步进程恢复和清理保护；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、33 个工具及其参数发现、结构化结果、配置更新、脚本生成、模板保存／计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
-当前支持普通批处理脚本；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
+当前支持普通批处理脚本、Gaussian 单任务辅助和带预检／续传的同步；复杂 Python 提交入口、数组、依赖、后台轮询和自动回传尚未实现。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 
 ## 许可证
 

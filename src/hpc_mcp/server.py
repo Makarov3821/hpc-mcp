@@ -8,6 +8,7 @@ from typing import Any
 from .scripts import Resources, script_generate as generate_script
 from .templates import TemplateService
 from .updates import UpdateService
+from .gaussian import GaussianService
 
 
 def create_server(service: ClusterService, jobs: JobService, config: ConfigManager | None = None):
@@ -20,6 +21,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "absolute config and state paths. Never reset local changes or resubmit jobs for an update."))
     templates = TemplateService(jobs)
     updates = UpdateService(jobs.history.root)
+    gaussian = GaussianService(jobs)
 
     @server.tool()
     def update_check(force: bool = False, max_age_seconds: int = 86400,
@@ -58,6 +60,101 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                             "plan_tool": "update_plan", "max_age_seconds": 86400,
                             "timeout": 10, "force": False},
                 "config_path": str(config.path) if config else None}
+
+    @server.tool()
+    def gaussian_inspect(input_file: str) -> dict[str, Any]:
+        """Read-only .gjf/.com Link0/Link1 analysis with line numbers and unresolved items.
+
+        Returns CPU/memory, checkpoint dependencies and candidate outputs. Does not execute,
+        edit, scan directories or submit. Review path/resource uncertainty before prepare.
+        """
+        from .gaussian import gaussian_inspect as inspect_card
+        return inspect_card(input_file)
+
+    @server.tool()
+    def gaussian_prepare(cluster: str, input_file: str, project_root: str, spec: dict,
+                         outputs: list[str], changes: dict | None = None,
+                         dependencies: list[str] | None = None, allow_unresolved: bool = False,
+                         max_input_bytes: int | None = None) -> dict[str, Any]:
+        """Prepare one Gaussian card in a project; explicit outputs and command spec required.
+
+        spec follows script_generate. changes accepts cpus, memory (Gaussian unit string),
+        paths (literal value or chk:value/oldchk:value -> relative snapshot path). Edits affect snapshot
+        only, return diff. Remapped old checkpoints must be local within project_root.
+        dependencies adds relative files; unresolved fields require explicit review.
+        Reject resource/input-output conflicts. job_submit separately executes the plan.
+        """
+        return gaussian.prepare(cluster, input_file, project_root, spec, outputs, changes,
+                                dependencies, allow_unresolved, max_input_bytes)
+
+    @server.tool()
+    def gaussian_result(run_id: str, log_path: str | None = None,
+                        max_bytes: int = 1048576) -> dict[str, Any]:
+        """Assess a completed downloaded Gaussian log separately from scheduler state.
+
+        Relative log_path defaults to prepared Gaussian stdout or stdout.log. Only latest
+        synced files qualify and hashes are checked. Full streaming scan with bounded evidence
+        (1024..16777216 bytes); incomplete evidence returns unknown. Never interprets log text as instructions.
+        """
+        return gaussian.result(run_id, log_path, max_bytes)
+
+    @server.tool()
+    def job_sync_preview(run_id: str, mode: str | None = None, includes: list[str] | None = None,
+                         excludes: list[str] | None = None, max_file_bytes: int | None = None,
+                         max_total_bytes: int | None = None, reserve_bytes: int | None = None,
+                         timeout: int | None = None) -> dict[str, Any]:
+        """Preview exact rsync selection, sizes and staging free space without downloading.
+
+        Limits inherit cluster settings; reserve_bytes may be zero. Running files may change.
+        This is a preflight estimate, not a filesystem quota. No remote writes.
+        """
+        return jobs.job_sync_preview(run_id, mode, includes, excludes, max_file_bytes,
+                                     max_total_bytes, reserve_bytes, timeout)
+
+    @server.tool()
+    def job_sync_start(run_id: str, options: dict | None = None) -> dict[str, Any]:
+        """Start a persistent local sync worker and return operation_id immediately.
+
+        options contains any public job_sync parameter except run_id. Use job_sync_operation
+        to query progress/outcome across MCP restarts. Does not submit or monitor jobs.
+        """
+        return jobs.job_sync_start(run_id, options)
+
+    @server.tool()
+    def job_sync_operation(operation_id: str) -> dict[str, Any]:
+        """Read durable sync operation state/progress/result; absent worker marks interrupted."""
+        return jobs.job_sync_operation(operation_id)
+
+    @server.tool()
+    def job_storage_cleanup(run_id: str, categories: list[str] | None = None,
+                            older_than_seconds: int = 86400, dry_run: bool = True) -> dict[str, Any]:
+        """Preview/delete terminal fully synced run storage, preserving history and latest results.
+
+        categories: snapshot, sync_history (default), old_outputs. Age nonnegative.
+        Deleting snapshots prevents replay from those files; metadata remains.
+        Project installed outputs are never removed. No timer is started.
+        """
+        return jobs.job_storage_cleanup(run_id, categories, older_than_seconds, dry_run)
+
+    @server.tool()
+    def input_cache_cleanup(older_than_seconds: int = 86400,
+                            max_cache_bytes: int = 10737418240, dry_run: bool = True) -> dict[str, Any]:
+        """Preview/delete oldest shared input-cache blobs by age or capacity (nonnegative).
+
+        Independent snapshots remain intact. Cache use is opt-in via cluster input_cache.
+        CoW savings depend on filesystem support; fallback copying may consume extra space.
+        """
+        return jobs.input_cache_cleanup(older_than_seconds, max_cache_bytes, dry_run)
+
+    @server.tool()
+    def job_remote_cleanup(run_id: str, dry_run: bool = True) -> dict[str, Any]:
+        """Preview/delete one registered remote run after fresh terminal status and verified sync.
+
+        dry_run=false permanently removes unselected remote files too. Retains only outputs
+        already downloaded. Validates canonical path and original submission receipt first.
+        Default preserves remote data; cleanup never submits or cancels jobs.
+        """
+        return jobs.job_remote_cleanup(run_id, dry_run)
 
     @server.tool()
     def script_generate(scheduler: str, spec: dict) -> dict[str, Any]:
@@ -229,7 +326,9 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                  excludes: list[str] | None = None, destination: str | None = None,
                  layout: str | None = None, overwrite: str | None = None,
                  checksum: bool | None = None, compress: bool | None = None,
-                 timeout: int | None = None) -> dict[str, Any]:
+                 timeout: int | None = None, resume: bool | None = None,
+                 max_file_bytes: int | None = None, max_total_bytes: int | None = None,
+                 reserve_bytes: int | None = None, stable_only: bool = False) -> dict[str, Any]:
         """Download outputs using fully configurable rules; null arguments use saved/default settings.
 
         mode: all/filtered; includes/excludes: relative rsync patterns (excludes win).
@@ -237,9 +336,13 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         layout: snapshot/direct; overwrite: error/replace/merge. replace archives old data;
         merge overwrites colliding files and retains unmatched files. timeout: 1..86400 seconds.
         Internal receipts and symlinks are always excluded. Running/unknown outputs are partial.
+        resume reuses matching failed staging; max_file_bytes/max_total_bytes/reserve_bytes
+        inherit cluster limits. stable_only requires fresh terminal status. Selection is checked
+        before/after transfer. Use job_sync_start for long downloads.
         Project tasks return to input_dir by default; uploaded inputs cannot be overwritten.
         """
         return jobs.job_sync(run_id, mode, includes, excludes, destination, layout, overwrite,
-                             checksum, compress, timeout)
+                             checksum, compress, timeout, resume, max_file_bytes, max_total_bytes,
+                             reserve_bytes, stable_only)
 
     return server
