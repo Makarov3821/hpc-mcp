@@ -12,6 +12,8 @@ from .history import History, now
 from .jobs import JobService
 from .monitor import MonitorService, settings_from, state_lock
 from .monitor_engine import MonitorEngine
+from .workflow import WorkflowService
+from dataclasses import replace
 
 
 def main():
@@ -39,6 +41,8 @@ def main():
             service = MonitorService(JobService(clusters, history.root))
             settings = settings_from(runtime['settings'])
             engine = MonitorEngine(service, settings, stopping=lambda: stopped[0])
+            workflows = WorkflowService(service.jobs, stopping=lambda: stopped[0] or service.runtime().get('stop_requested'))
+            next_workflow_cycle = 0
             service.runtime_update(instance_id, state='running', pid=os.getpid(), heartbeat_at=now())
             logger.info('Coordinator %s started; %d cluster configurations', instance_id, len(clusters))
             while not stopped[0]:
@@ -47,7 +51,18 @@ def main():
                     break
                 service.runtime_update(instance_id, heartbeat_at=now())
                 try:
+                    workflow_id = workflows.next_due() if time.monotonic() >= next_workflow_cycle else None
+                    engine.settings = replace(settings, max_status_commands_per_cycle=max(1, settings.max_status_commands_per_cycle // 2)) if workflow_id else settings
                     summary = engine.tick()
+                    if workflow_id and not workflows.stopping():
+                        remaining = settings.max_status_commands_per_cycle - summary['status_commands']
+                        if remaining > 0:
+                            result = workflows.tick(workflow_id, remaining)
+                            summary['workflow'] = {key: result[key] for key in
+                                ('submitted', 'in_flight', 'status_commands', 'deferred') if key in result}
+                            summary['workflow']['workflow_id'] = workflow_id
+                            summary['status_commands'] += result['status_commands']
+                        next_workflow_cycle = time.monotonic() + settings.poll_interval_seconds
                     service.runtime_update(instance_id, last_cycle=summary, last_error=None, heartbeat_at=now())
                 except Exception as error:
                     logger.exception('Coordinator cycle failed')

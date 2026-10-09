@@ -17,6 +17,34 @@ def main():
     parser.add_argument("--state-dir", default=os.environ.get("HPC_MCP_STATE", ".hpc-mcp"))
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
+    workflow_plan = sub.add_parser('workflow-plan')
+    workflow_plan.add_argument('name')
+    workflow_plan.add_argument('run_ids', nargs='+')
+    workflow_plan.add_argument('--dependencies-file', help='JSON list of dependency edges')
+    workflow_plan.add_argument('--limits', default='{}', help='JSON concurrency and rate settings')
+    workflow_start = sub.add_parser('workflow-start')
+    workflow_start.add_argument('workflow_id')
+    workflow_start.add_argument('review_token')
+    workflow_start.add_argument('--confirmation-note', required=True)
+    for action in ('workflow-pause', 'workflow-tick'):
+        sub.add_parser(action).add_argument('workflow_id')
+    workflow_status = sub.add_parser('workflow-status')
+    workflow_status.add_argument('workflow_id', nargs='?')
+    workflow_status.add_argument('--limit', type=int, default=50)
+    workflow_status.add_argument('--offset', type=int, default=0)
+    workflow_retry = sub.add_parser('workflow-retry')
+    workflow_retry.add_argument('workflow_id')
+    workflow_retry.add_argument('task_ids', nargs='+')
+    usage = sub.add_parser('job-usage')
+    usage.add_argument('run_id')
+    usage.add_argument('--refresh', action=argparse.BooleanOptionalAction, default=True)
+    usage_report = sub.add_parser('usage-report')
+    usage_report.add_argument('--cluster')
+    usage_report.add_argument('--project-root')
+    usage_report.add_argument('--since')
+    usage_report.add_argument('--until')
+    usage_report.add_argument('--limit', type=int, default=500)
+    usage_report.add_argument('--offset', type=int, default=0)
     probe = sub.add_parser('cluster-probe', help='Read-only new-cluster onboarding; no software disk search')
     probe.add_argument('ssh_host')
     probe.add_argument('--scheduler', choices=('lsf', 'slurm'))
@@ -232,11 +260,40 @@ def main():
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return
         onboarding = args.action.startswith('profile-') or args.action in ('cluster-probe', 'onboarding-report')
-        clusters = {} if (onboarding or args.action in ("serve", "config-set", "template-import", "template-list", "template-get", "sync-operation", "storage-cleanup", "input-cache-cleanup", "gaussian-result", "monitor-status", "monitor-stop", "monitor-unwatch", "monitor-notifications")) \
+        scheduling = args.action.startswith('workflow-') or args.action in ('job-usage', 'usage-report')
+        clusters = {} if (onboarding or scheduling or args.action in ("serve", "config-set", "template-import", "template-list", "template-get", "sync-operation", "storage-cleanup", "input-cache-cleanup", "gaussian-result", "monitor-status", "monitor-stop", "monitor-unwatch", "monitor-notifications")) \
             and not Path(args.config).exists() \
             else load_config(args.config)
         config = ConfigManager(args.config, clusters)
         service = ClusterService(clusters)
+        if scheduling:
+            from .jobs import JobService
+            from .workflow import WorkflowService
+            from .accounting import AccountingService
+            jobs = JobService(clusters, args.state_dir)
+            workflows = WorkflowService(jobs)
+            if args.action == 'workflow-plan':
+                data = workflows.plan(args.name, args.run_ids,
+                    json.loads(Path(args.dependencies_file).read_text()) if args.dependencies_file else None,
+                    json.loads(args.limits))
+            elif args.action == 'workflow-start':
+                data = workflows.start(args.workflow_id, args.review_token, args.confirmation_note)
+            elif args.action == 'workflow-pause':
+                data = workflows.pause(args.workflow_id)
+            elif args.action == 'workflow-retry':
+                data = workflows.retry(args.workflow_id, args.task_ids)
+            elif args.action == 'workflow-tick':
+                data = workflows.tick(args.workflow_id)
+            elif args.action == 'workflow-status':
+                data = workflows.get(args.workflow_id) if args.workflow_id else workflows.list(args.limit, args.offset)
+            elif args.action == 'job-usage':
+                data = AccountingService(jobs).usage(args.run_id, args.refresh)
+            else:
+                data = AccountingService(jobs).report(args.cluster, args.project_root, args.since, args.until, args.limit, args.offset)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            if not data.get('ok', True):
+                sys.exit(1)
+            return
         if onboarding:
             from .profiles import ProfileService
             from .jobs import JobService

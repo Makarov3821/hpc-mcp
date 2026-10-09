@@ -333,6 +333,27 @@ systemctl --user daemon-reload
 
 模板采用 on-failure 重启和 control-group 停止方式；服务退出可能中断同组同步 worker，恢复后识别 interrupted 并按暂存续传，不保证 worker 跨服务停止存活。若用户希望注销后／开机无登录时仍运行，应单独确认该运行需求及系统策略，再配置用户 lingering；不擅自改变其他用户服务设置。[systemd 服务配置](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)、[进程停止范围](https://github.com/systemd/systemd/blob/main/man/systemd.kill.xml)、[用户 lingering](https://www.freedesktop.org/software/systemd/man/252/loginctl.html)。Windows／macOS 服务托管及系统单元实机验收尚未实现；当前进程锁和身份检查面向 Linux。
 
+### 批量任务、依赖与用量
+
+每个输入卡／任务目录先独立 prepare，核对资源、环境和输出规则。用 `workflow_plan` 将选定的 prepared run 登记为一个持久工作流，默认禁用；向用户展示计划中的任务、依赖、文件映射和限制。取得这份计划的明确授权后，调用 `workflow_start(workflow_id, review_token, confirmation_note)`。它只启用计划；`workflow_tick` 或已启动的监控协调器才逐项提交。
+
+```bash
+hpc-mcp workflow-plan project RUN_B RUN_D --limits '{"max_in_flight":1,"submissions_per_minute":2}'
+# 核对返回的计划并记录用户授权后：
+hpc-mcp workflow-start WORKFLOW_ID REVIEW_TOKEN --confirmation-note '用户授权上述任务和限制'
+hpc-mcp workflow-tick WORKFLOW_ID
+hpc-mcp workflow-status WORKFLOW_ID
+hpc-mcp workflow-pause WORKFLOW_ID
+```
+
+所有命令继续使用相同的 `--config`／`--state-dir`。在途数量包括排队、运行、挂起及提交结局未知的任务，仅限制这个工作流；不是调度器实际运行数或整个账户配额。已登记的任务由工作流统一提交，普通 job_submit 不能绕过限制。暂停停止后续提交，不取消已交作业；上传失败可显式 workflow_retry，拒绝提交或计算失败需要准备新任务。未知提交先恢复回执，不盲目重交。
+
+依赖分别表达调度成功、应用成功及文件就绪；应用成功目前仅支持 gaussian_prepare 的 Gaussian 元数据。显式文件映射可把父任务的 `test1.chk` 交给子任务的 `old.chk`：稳定同步、清单和哈希通过后生成新的执行快照，不覆盖原输入或准备快照。子任务尚不存在的依赖文件不用先伪造；以普通／模板 prepare 准备其余输入即可。`workflow_status.tasks[初始run_id].run_id` 指向实际执行编号，后续查询、同步和取消使用这个编号。
+
+协调器可以在 agent 退出后推进已授权工作流，但不会替它们自动登记最终结果回传。取得实际提交编号后，再用 monitor_watch 登记所需输出与清理策略。依赖文件同步只服务文件交接。具体限制、错误恢复和示例见 [接口参考](docs/REFERENCE.md#工作流与用量统计)。
+
+`job_usage(run_id)` 查询并保存这项任务的记账证据；`usage_report(project_root="/ABS/A")` 汇总已缓存的项目记录，不自动遍历远程历史。区分申请资源、分配 CPU 时间和实际 CPU 时间；缺失值保留 null，失败刷新保留旧证据并标记陈旧。统计范围与 Slurm 峰值 RSS 的口径随结果返回，不自动修改应用配置。准备真机验收时使用 [测试清单](docs/LIVE_TESTING.md)。
+
 ## 7. 更新与旧版本迁移
 
 MCP 提供 `update_check(force=false, max_age_seconds=86400, timeout=10)` 和 `update_plan`（相同参数）。前者通过公开 GitHub HTTPS API 比较本地提交与上游 `main`，后者返回带 `argv`、`cwd` 的有序命令，不直接执行更新。当前版本号可能不变，因此以提交而非版本号判断更新。检查结果保存在指定状态目录的 `update-check.json`，默认一天复用；服务启动不主动联网。MCP 会向客户端提供会话检查指引，实际提示依赖 agent 调用工具，不是桌面推送通知。
@@ -391,9 +412,9 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-当前测试包含 Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、48 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+当前完整测试共 180 项，包含工作流限流、依赖交接、恢复、用量缺失处理、Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、56 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
 
-当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。复杂 Python 入口完整兼容、批量并发控制、数组、作业依赖和用量统计尚未实现；packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
+当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。批量并发控制、任务依赖和用量统计已有实现；数组及复杂 Python 入口完整兼容仍待开发，packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 
 ## 许可证
 

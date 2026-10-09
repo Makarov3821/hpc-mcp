@@ -1,6 +1,6 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；48 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；56 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
 
 ## 新集群引导与应用运行配置
 
@@ -325,3 +325,59 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 开启 input_cache 后，输入先以 SHA-256 存为 blob，再独立复制／reflink 到快照；不 hardlink 原输入、缓存或其他快照，修改一份不会污染另一份。缓存复用前校验内容；不支持 CoW 时会额外复制占用磁盘。清理缓存不删除快照，维护事件写入 events 的 maintenance 标识。默认不启用，也不创建后台计时器。
 
 远程清理默认预览目录用量。dry_run=false 永久删除本 run 中未回传的文件，先确认已选择全部需要保留的数据；成功记录 remote_removed，不修改其他目录。同步完成只表示所选文件完整，并不表示已下载所有输出。CLI `storage-cleanup RUN_ID --category ...`、`input-cache-cleanup`、`remote-cleanup RUN_ID`，对应删除需显式加 `--apply`。
+
+## 工作流与用量统计
+
+### 工作流接口（7C）
+
+| MCP 工具 | 参数与动作 |
+| --- | --- |
+| workflow_plan | `name, run_ids, dependencies=null, limits=null`；名称 1..100 字符，1..500 个未提交 prepared run，至多 1000 条依赖；登记后禁止直接 job_submit。返回禁用计划与 review_token。 |
+| workflow_start | `workflow_id, review_token, confirmation_note`；凭据须匹配固定计划，记录明确用户授权，note 1..4096 字符。仅启用，不立即提交或启动进程。 |
+| workflow_pause | `workflow_id`；停止后续放行，已预留的上传／提交可能完成；不取消作业、不停止同步、不释放登记。恢复用 workflow_start。 |
+| workflow_retry | `workflow_id, task_ids`；任务标识为初始 run_id，仅重置未提交准备／上传任务，清除依赖传输跟踪；不启用暂停计划。调度器拒绝或计算失败须准备新任务。 |
+| workflow_status | `workflow_id=null, limit=50, offset=0`；指定编号返回完整状态，否则分页列表，limit 1..500。只读本地。 |
+| workflow_tick | `workflow_id`；已授权且到期才推进，可查询、恢复回执、启动依赖同步和提交。查询结局未知不释放在途容量；提交结局未知不盲目重交。 |
+
+限制在计划中固定，可通过 settings_get 发现；修改限制需准备新任务与计划，不改写正在执行的计划。
+
+| limits 字段 | 默认与范围 |
+| --- | --- |
+| max_in_flight | 2，1..500；此工作流排队／运行／挂起／未知提交总量，不是账户配额 |
+| submissions_per_minute | 10，1..500；滚动 60 秒窗口，计入提交尝试，重启保留 |
+| max_submissions_per_tick | 1，1..500 |
+| max_status_commands | 20，1..500；单轮调度状态查询预算 |
+| max_status_jobs | 50，1..500；轮转查询窗口 |
+| poll_interval_seconds | 60，5..86400 |
+| max_submit_attempts | 3，1..500；失败不自动反复提交，显式 retry 重置 |
+| max_handoff_bytes | 1073741824，1..1099511627776；一次派生输入的依赖文件总量，同时受原 max_input_bytes、同步容量和磁盘余量限制 |
+
+协调器按监控全局周期推进一个到期工作流，共享状态查询预算；回执恢复、上传和同步 worker 的命令不属于这个状态预算。监控开启本身不授权提交，只有 workflow_start 启用的计划可放行。monitor_stop 停止协调器推进但保留工作流启用状态；彻底禁止后续手动／后台放行须 workflow_pause。协调器使用启动时的集群配置，新配置需停止后重新启动。
+
+依赖条目：`{run_id: 子任务初始编号, parent_run_id: 父任务初始编号, condition: ..., files: [...]}`。内部父任务来自本计划，外部父任务须已确认提交；拒绝循环。所有条件要求新鲜成功终态：scheduler_succeeded 仅调度成功；application_succeeded 另外检查 Gaussian 应用日志；files_ready 必须明确映射文件。应用判据只接受带 Gaussian 应用元数据的父任务，其他应用尚未适配。
+
+```json
+[
+  {"run_id":"CHILD_RUN_ID","parent_run_id":"PARENT_RUN_ID","condition":"files_ready",
+   "files":[{"source":"test1.chk","target":"old.chk"}]}
+]
+```
+
+files 每条边至多 64 项，source／target 均为字面相对路径，不支持源通配符，目标不能与已有子输入或其他映射重叠。父失败／取消阻塞子任务；缺文件、哈希变化、同步失败进入 needs_attention。依赖同步沿用原覆盖策略，不能自动改为 merge。核对后 retry；完成后已禁用的计划需重新 start。
+
+文件校验通过后，从原子任务快照生成新的独立执行 run，保存父编号／源路径／目标路径／SHA／大小。原 prepared run 与项目输入不变；tasks 的 key 始终是原 run_id，tasks[key].run_id 才是实际执行编号。最终结果自动回传需另行 monitor_watch 实际编号；依赖交接不等于完整结果回传。数组暂缓，packing 不实现。
+
+CLI 将工具名下划线换为连字符；workflow-plan 的 run_ids 为位置参数，依赖使用 `--dependencies-file /ABS/edges.json`，限制使用 `--limits '{"max_in_flight":1}'`。workflow-start 使用 `--confirmation-note`，workflow-retry 后列初始任务编号。所有命令沿用统一配置／状态路径。
+
+### 记账接口（7E）
+
+- `job_usage(run_id, refresh=true)`：对已确认提交的单任务查询 LSF bacct／Slurm sacct，并核对编号和 run 名。返回 usage 中的 metrics、declared_resources、missing_metrics、source 和 checked_at；申请值来自准备时生成器定义，普通脚本没有该定义则未知。`refresh=false` 只读缓存。失败刷新保留旧记录并标记 stale；记录过期、权限不足、身份歧义不能解释为零用量。
+- `usage_report(cluster=null, project_root=null, since=null, until=null, limit=500, offset=0)`：只汇总已缓存登记任务，limit 1..5000，offset 非负；时间边界为带时区 ISO 格式，过滤**本地任务创建时间**，不是集群记账结束时间。返回 total_matching_runs、truncated、stale_runs；totals 是当前页汇总，每个指标附 known_runs／missing_runs。无已知值则 sum=null，不累加峰值内存。
+
+时间单位为秒，内存规范化为 bytes，申请内存的 per_cpu／per_node 作用范围保留。Slurm CPUTimeRAW 是分配 CPU 时间，TotalCPU 是实际 CPU 时间；不把父记录与步骤 CPU 重复相加。MaxRSS 是报告步骤中的任务峰值，不能解释为整个作业的总内存峰值；步骤原记录随结果保留。LSF 无单位内存保持未知，MEM 口径由站点采集决定。站点返回 0 时保留并提示可能存在采集缺口，不自动调整已确认配置。[Slurm sacct](https://slurm.schedmd.com/sacct.html)、[LSF bacct](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=reference-bacct)。
+
+```bash
+hpc-mcp job-usage RUN_ID
+hpc-mcp job-usage RUN_ID --no-refresh
+hpc-mcp usage-report --project-root /ABS/A --since 2026-10-01T00:00:00+08:00 --limit 100
+```

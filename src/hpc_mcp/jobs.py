@@ -279,8 +279,10 @@ class JobService:
         return {"ok": True, "run": self.history.get(run_id),
                 "events": self.history.events(run_id)}
 
-    def job_submit(self, run_id: str) -> dict:
+    def job_submit(self, run_id: str, _workflow_token: str | None = None) -> dict:
         with self.history.lock(run_id):
+            from .workflow import submission_guard
+            submission_guard(self.history, run_id, _workflow_token)
             run = self.history.get(run_id)
             cluster = self._cluster(run)
             prefix = self._receipt_prefix(run)

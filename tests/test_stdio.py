@@ -62,6 +62,8 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "monitor_status", "monitor_notifications",
                             "cluster_probe", "onboarding_report", "profile_draft", "profile_confirm",
                             "profile_get", "profile_list", "profile_plan", "profile_validate",
+                            "workflow_plan", "workflow_start", "workflow_pause", "workflow_retry",
+                            "workflow_status", "workflow_tick", "job_usage", "usage_report",
                         })
                         properties = tools["job_prepare"].input_schema["properties"]
                         self.assertIn("project_root", properties)
@@ -146,6 +148,21 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(planned.is_error, planned.content)
                         self.assertEqual(planned.structured_content["run"]["template"]["version"], 1)
                         template_plan_id = planned.structured_content["plan_id"]
+                        workflow = await client.call_tool('workflow_plan', {'name': 'offline-workflow', 'run_ids': [template_plan_id]})
+                        self.assertFalse(workflow.is_error, workflow.content)
+                        workflow_value = workflow.structured_content['workflow']
+                        self.assertFalse(workflow_value['enabled'])
+                        started = await client.call_tool('workflow_start', {'workflow_id': workflow_value['workflow_id'],
+                            'review_token': workflow_value['review_token'], 'confirmation_note': 'Offline test explicitly authorizes this plan'})
+                        self.assertFalse(started.is_error)
+                        paused = await client.call_tool('workflow_pause', {'workflow_id': workflow_value['workflow_id']})
+                        self.assertFalse(paused.structured_content['workflow']['enabled'])
+                        tick = await client.call_tool('workflow_tick', {'workflow_id': workflow_value['workflow_id']})
+                        self.assertTrue(tick.structured_content['deferred'])
+                        usage = await client.call_tool('job_usage', {'run_id': run['run_id'], 'refresh': False})
+                        self.assertIsNone(usage.structured_content['usage'])
+                        summary = await client.call_tool('usage_report', {})
+                        self.assertIsNone(summary.structured_content['totals']['actual_cpu_seconds']['sum'])
                     async with Client(parameters, mode=mode, read_timeout_seconds=10) as restarted:
                         saved = await restarted.call_tool("job_get", {"run_id": run["run_id"]})
                         self.assertFalse(saved.is_error)
@@ -160,5 +177,7 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(saved_profile.structured_content['profile']['is_default'])
                         saved_report = await restarted.call_tool('onboarding_report', {'report_id': report_id})
                         self.assertEqual(saved_report.structured_content['report']['source'], inspected_script.structured_content['source'])
+                        saved_workflow = await restarted.call_tool('workflow_status', {'workflow_id': workflow_value['workflow_id']})
+                        self.assertEqual(saved_workflow.structured_content['workflow']['plan']['run_ids'], [template_plan_id])
                 self.assertFalse((cwd / ".hpc-mcp").exists())
                 self.assertFalse((project / ".hpc-mcp-sync").exists())
