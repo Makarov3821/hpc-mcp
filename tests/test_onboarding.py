@@ -1,6 +1,5 @@
-"""Onboarding evidence, confirmation and compute probes using local scheduler stand-ins."""
+"""Cluster onboarding and static script evidence using local scheduler stand-ins."""
 
-from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
@@ -26,18 +25,9 @@ class OnboardingTests(unittest.TestCase):
         self.jobs = self.fixture.jobs
         self.service = ClusterService(self.jobs.clusters, self.fixture.transport)
         self.profiles = ProfileService(self.service, self.jobs)
-        self.definition = {'scheduler': 'lsf', 'spec': {'command': ['true'],
-            'resources': {'cpus': '{{cpus}}', 'queue': 'normal'},
-            'stdout': 'result.log'}, 'input_files': ['data.txt'], 'outputs': ['result.log'],
-            'parameters': {'cpus': {'type': 'integer', 'default': 2}}}
         (self.fixture.bin / 'bqueues').write_text('#!/bin/bash\ncat <<\'EOF\'\n' +
             (Path(__file__).parent / 'fixtures/bqueues.txt').read_text() + '\nEOF\n')
         (self.fixture.bin / 'bqueues').chmod(0o755)
-
-    def confirmed(self, reports=None):
-        draft = self.profiles.draft('gaussian', 'lsf', 'gaussian', self.definition, reports)['profile']
-        return self.profiles.confirm(draft['profile_id'], draft['review_token'],
-                                     'User reviewed queue, resources, paths and unresolved evidence')['profile']
 
     def test_alias_probe_is_bounded_no_disk_search_and_survives_restart(self):
         report = self.profiles.probes.probe('alias', scheduler='lsf', work_root=str(self.fixture.remote),
@@ -104,103 +94,6 @@ class OnboardingTests(unittest.TestCase):
         self.assertTrue(report['modules']['truncated'])
         self.assertEqual(len(calls), 1)
         self.assertNotIn('module load', calls[0])
-
-    def test_evidence_destination_and_profile_checksums(self):
-        report = self.profiles.store.save('probe', {'ssh_host': 'other-alias'})
-        with self.assertRaises(ValueError):
-            self.profiles.draft('wrong', 'lsf', 'gaussian', self.definition, [report['report_id']])
-        profile = self.confirmed()
-        with self.jobs.history.connect() as db:
-            stored = json.loads(db.execute('SELECT data FROM application_profiles WHERE id=?',
-                                           (profile['profile_id'],)).fetchone()[0])
-            stored['definition']['spec']['resources']['queue'] = 'tampered'
-            db.execute('UPDATE application_profiles SET data=? WHERE id=?',
-                       (json.dumps(stored), profile['profile_id']))
-        with self.assertRaises(ValueError):
-            self.profiles.get(profile['profile_id'])
-
-    def test_confirmation_gate_evidence_defaults_and_version_pinning(self):
-        report = self.profiles.inspect(str(self.fixture.source / 'job.sh'))
-        draft = self.profiles.draft('gaussian', 'lsf', 'gaussian', self.definition, [report['report_id']])['profile']
-        self.assertIsNone(draft['confirmation'])
-        self.assertTrue(draft['unresolved'][0]['items'])
-        with self.assertRaises(ValueError):
-            self.profiles.plan(str(self.fixture.source), draft['profile_id'])
-        with self.assertRaises(ValueError):
-            self.profiles.confirm(draft['profile_id'], 'wrong-token', 'confirmed')
-        confirmed = self.profiles.confirm(draft['profile_id'], draft['review_token'], 'Reviewed unresolved items')['profile']
-        self.assertTrue(confirmed['is_default'])
-        self.assertEqual(confirmed['validation'], 'unverified')
-        self.profiles.confirm(draft['profile_id'], draft['review_token'], 'repeat')
-        self.assertEqual(self.profiles.templates.template_get('profile.' + draft['profile_id'])['template']['version'], 1)
-        plan = self.profiles.plan(str(self.fixture.source), cluster='lsf', application='gaussian',
-                                  parameters={'cpus': 4}, project_root=str(self.fixture.root))
-        self.assertEqual(plan['run']['generation']['spec']['resources']['cpus'], 4)
-        self.assertEqual(plan['run']['profile']['profile_id'], draft['profile_id'])
-        self.assertEqual(plan['run']['phase'], 'prepared')
-        self.assertFalse((self.fixture.root / 'submissions').exists())
-        self.definition['spec']['resources']['queue'] = 'newqueue'
-        second = self.profiles.draft('gaussian', 'lsf', 'gaussian', self.definition)['profile']
-        self.assertEqual(second['version'], 2)
-        restarted = ProfileService(self.service, self.jobs)
-        self.assertEqual(restarted.get(draft['profile_id'])['profile']['definition']['spec']['resources']['queue'], 'normal')
-
-    def test_cluster_change_invalidates_confirmation_and_validation(self):
-        profile = self.confirmed()
-        self.jobs.clusters['lsf'] = replace(self.jobs.clusters['lsf'], init_scripts=('/site/new-init.sh',))
-        stale = self.profiles.get(profile['profile_id'])['profile']
-        self.assertTrue(stale['requires_recheck'])
-        self.assertEqual(stale['validation'], 'stale')
-        with self.assertRaises(ValueError):
-            self.profiles.plan(str(self.fixture.source), profile['profile_id'])
-        with self.assertRaises(ValueError):
-            self.profiles.confirm(profile['profile_id'], profile['review_token'], 'confirmed')
-
-    def test_validation_prepare_submit_and_stable_evidence(self):
-        profile = self.confirmed()
-        probe = self.profiles.validate(profile['profile_id'], ['bash', '-c', 'printf application-probe'])
-        run_id = probe['run']['run_id']
-        self.assertEqual(probe['run']['phase'], 'prepared')
-        self.assertFalse((self.fixture.root / 'submissions').exists())
-        self.assertEqual(self.profiles.get(profile['profile_id'])['profile']['validation'], 'unverified')
-        pending = self.profiles.validate(profile['profile_id'], run_id=run_id)
-        self.assertEqual(pending['status'], 'pending')
-        self.assertTrue(self.jobs.job_submit(run_id)['ok'])
-        verified = self.profiles.validate(profile['profile_id'], run_id=run_id)
-        self.assertEqual(verified['status'], 'validated', verified)
-        self.assertEqual(verified['evidence']['probe']['parameters'], {'cpus': 2})
-        self.assertIn('hostname=', verified['evidence']['log_excerpt'])
-        self.assertTrue(verified['evidence']['output_manifest'])
-        restarted = ProfileService(self.service, self.jobs)
-        self.assertEqual(restarted.get(profile['profile_id'])['profile']['validation'], 'validated')
-        plan = self.profiles.plan(str(self.fixture.source), profile['profile_id'], parameters={'cpus': 8})
-        self.assertEqual(plan['run']['profile']['validation'], 'unverified')
-
-    def test_unrelated_runs_and_failed_probe_cannot_establish_validation(self):
-        profile = self.confirmed()
-        unrelated = self.fixture.prepare()['run_id']
-        with self.assertRaises(ValueError):
-            self.profiles.validate(profile['profile_id'], run_id=unrelated)
-        prepared = self.profiles.validate(profile['profile_id'], ['bash', '-c', 'exit 7'])
-        run_id = prepared['run']['run_id']
-        self.jobs.job_submit(run_id)
-        # Stub claims DONE even on failure: missing footer must still prevent validation.
-        self.assertEqual(self.profiles.validate(profile['profile_id'], run_id=run_id)['status'], 'failed')
-
-    def test_unknown_state_or_transfer_failure_remains_pending(self):
-        profile = self.confirmed()
-        prepared = self.profiles.validate(profile['profile_id'], ['true'])
-        run_id = prepared['run']['run_id']
-        self.jobs.job_submit(run_id)
-        original = self.jobs.job_status
-        self.jobs.job_status = lambda rid: {'ok': False, 'run': dict(self.jobs.history.get(rid),
-            state='succeeded', status_query_ok=False)}
-        self.assertEqual(self.profiles.validate(profile['profile_id'], run_id=run_id)['status'], 'pending')
-        self.jobs.job_status = original
-        self.fixture.transfer.fail_download = True
-        self.assertEqual(self.profiles.validate(profile['profile_id'], run_id=run_id)['status'], 'pending')
-        self.assertEqual(self.profiles.get(profile['profile_id'])['profile']['validation'], 'unverified')
-
 
 class StaticEnvironmentTests(unittest.TestCase):
     def test_python_wrapper_constants_parameters_and_side_effects_are_only_evidence(self):

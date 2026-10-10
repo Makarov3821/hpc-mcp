@@ -5,7 +5,6 @@ import time
 from .jobs import TERMINAL
 from .monitor import state_lock, verified_outputs
 from .monitor_queries import query_runs
-from .operations import operation_get
 
 
 class MonitorEngine:

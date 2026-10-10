@@ -1,14 +1,12 @@
-"""Conservative Gaussian input inspection, snapshot preparation and log evidence."""
+"""Conservative read-only Gaussian input inspection and synced log evidence."""
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 from pathlib import Path
 import re
 
 from .jobs import relative_path
-from .templates import TemplateService
 from .history import now
 
 MAX_CARD_BYTES = 4 * 1024 * 1024
@@ -122,129 +120,6 @@ def gaussian_inspect(input_file: str) -> dict:
 class GaussianService:
     def __init__(self, jobs):
         self.jobs = jobs
-
-    def prepare(self, cluster: str, input_file: str, project_root: str, spec: dict,
-                outputs: list[str], changes: dict | None = None,
-                dependencies: list[str] | None = None, allow_unresolved: bool = False,
-                max_input_bytes: int | None = None, template_options: dict | None = None,
-                template_context: dict | None = None) -> dict:
-        if type(allow_unresolved) is not bool:
-            raise ValueError("allow_unresolved must be boolean")
-        report = gaussian_inspect(input_file)
-        path = Path(report["input_file"])
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_CARD_BYTES + 1)
-        if len(raw) > MAX_CARD_BYTES:
-            raise ValueError("input changed during inspection")
-        original = raw.decode("utf-8")
-        if hashlib.sha256(original.encode()).hexdigest() != report["sha256"]:
-            raise ValueError("input changed during inspection")
-        if cluster not in self.jobs.clusters:
-            raise ValueError("unknown cluster")
-        from .scripts import script_generate
-        script_generate(self.jobs.clusters[cluster].scheduler, spec)
-        resource_spec = spec.get("resources", {})
-        if resource_spec.get("tasks", 1) != 1 or resource_spec.get("nodes") not in (None, 1) or spec.get("launcher"):
-            raise ValueError("Gaussian assistance supports shared-memory single-task runs; MPI/Linda needs a separate adapter")
-        if dependencies is not None and not isinstance(dependencies, list):
-            raise ValueError("dependencies must be a list of relative files")
-        changes = {} if changes is None else changes
-        if not isinstance(changes, dict) or set(changes) - {"cpus", "memory", "paths"}:
-            raise ValueError("changes accepts cpus, memory and paths only")
-        if "cpus" in changes and (type(changes["cpus"]) is not int or changes["cpus"] < 1):
-            raise ValueError("changes.cpus must be positive")
-        if "memory" in changes:
-            memory_bytes(changes["memory"])
-        mapping = changes.get("paths", {})
-        if not isinstance(mapping, dict):
-            raise ValueError("changes.paths maps literal checkpoint values to relative paths")
-        for value in mapping.values():
-            checkpoint_path(value)
-        lines = original.splitlines(keepends=True)
-        used = set()
-        for field in report["analysis"]["fields"]:
-            key, value = field["key"], field["value"]
-            replacement = None
-            if key in ("nproc", "nprocshared") and "cpus" in changes:
-                replacement = "%NProcShared=" + str(changes["cpus"])
-            elif key == "mem" and "memory" in changes:
-                replacement = "%Mem=" + changes["memory"].strip()
-            elif key in ("chk", "oldchk"):
-                target_key = f"{key}:{value}" if f"{key}:{value}" in mapping else value
-                if target_key in mapping:
-                    replacement = "%" + key + "=" + mapping[target_key]
-                    used.add(target_key)
-            if replacement is not None:
-                lines[field["line"] - 1] = replacement + "\n"
-        if set(mapping) != used:
-            raise ValueError("changes.paths contains a value absent from the card")
-        # Explicit resource edits apply to every Link1 section, even if originally omitted.
-        for section in reversed(report["analysis"]["sections"]):
-            keys = {f["key"] for f in section["fields"]}
-            additions = []
-            if "cpus" in changes and not keys & {"nproc", "nprocshared"}:
-                additions.append("%NProcShared=" + str(changes["cpus"]) + "\n")
-            if "memory" in changes and "mem" not in keys:
-                additions.append("%Mem=" + changes["memory"].strip() + "\n")
-            lines[section["start_line"] - 1:section["start_line"] - 1] = additions
-        effective = "".join(lines)
-        analysis = inspect_text(effective, path.name)
-        if analysis["unresolved"] and not allow_unresolved:
-            raise ValueError("unresolved Link0 fields require explicit review or changes; use gaussian_inspect")
-        resources = spec.get("resources", {}) if isinstance(spec, dict) else {}
-        cpus = resources.get("cpus", 1)
-        if analysis["cpus"] and (type(cpus) is not int or cpus < analysis["cpus"]):
-            raise ValueError("scheduler CPUs are fewer than Gaussian requests")
-        scope = resources.get("memory_scope")
-        if analysis["memory_bytes"] and resources.get("memory_mb"):
-            allocated = resources["memory_mb"] * 1024 ** 2 * (cpus if scope == "per_cpu" else 1)
-            if scope != "lsf_reservation" and allocated < analysis["memory_bytes"]:
-                raise ValueError("scheduler memory is smaller than Gaussian %mem")
-        input_files = {path.name, *(relative_path(p) for p in dependencies or [])}
-        sources = {}
-        for field in report["analysis"]["fields"]:
-            source_key = f"oldchk:{field['value']}" if f"oldchk:{field['value']}" in mapping else field["value"]
-            if field["key"] == "oldchk" and source_key in mapping and checkpoint_path(mapping[source_key]) in analysis["required_checkpoints"]:
-                original_path = field["value"]
-                if any(c in original_path for c in "$~\"'`"):
-                    raise ValueError("old checkpoint source must be a literal local path")
-                original_path = original_path if Path(original_path).suffix else original_path + ".chk"
-                local = (path.parent / original_path).absolute()
-                sources[checkpoint_path(mapping[source_key])] = str(local)
-        for checkpoint in analysis["required_checkpoints"]:
-            local = Path(sources[checkpoint]) if checkpoint in sources else path.parent / checkpoint
-            if not local.is_file() or local.is_symlink():
-                raise ValueError(f"required old checkpoint missing: {checkpoint}")
-            input_files.add(checkpoint)
-        # Guess=Read/Geom=Check can also read the same %chk; require caller to supply it explicitly.
-        route = " ".join(r["text"] for s in analysis["sections"] for r in s["route"])
-        if re.search(r"(?i)(guess\s*=\s*(?:\([^)]*\bread\b|read)|geom\s*=\s*(?:allcheck|check))", route):
-            if not any(f["key"] == "oldchk" and "path" in f for f in analysis["fields"]):
-                raise ValueError("checkpoint-based route requires explicit %oldchk and a distinct output %chk")
-        if input_files & set(analysis["candidate_outputs"]):
-            raise ValueError("checkpoint outputs overlap uploaded inputs; use distinct %oldchk/%chk paths")
-        spec = dict(spec)
-        if spec.get("stdin", path.name) != path.name:
-            raise ValueError("Gaussian stdin must be the selected card")
-        spec["stdin"] = path.name
-        spec.setdefault("stdout", path.with_suffix(".log").name)
-        parents = {str(Path(f["path"]).parent) for f in analysis["fields"]
-                   if f["key"] == "chk" and "path" in f and str(Path(f["path"]).parent) != "."}
-        spec["output_directories"] = sorted(set(spec.get("output_directories", [])) | parents)
-        provenance = {"kind": "gaussian", "input": path.name, "original_sha256": report["sha256"],
-                      "effective_sha256": hashlib.sha256(effective.encode()).hexdigest(),
-                      "analysis": analysis, "changes": changes,
-                      "log": spec["stdout"], "expected_sections": len(analysis["sections"]),
-                      "diff": "".join(difflib.unified_diff(original.splitlines(True), effective.splitlines(True),
-                                                        fromfile="original", tofile="snapshot"))}
-        rendered = TemplateService(self.jobs).job_prepare_generated
-        result = rendered(cluster, str(path.parent), spec, outputs, project_root,
-                          sorted(input_files), max_input_bytes=max_input_bytes,
-                          input_overrides={path.name: effective}, input_sources=sources,
-                          original_inputs={path.name: original}, application_context=provenance,
-                          context=template_context, **(template_options or {}))
-        run = result["run"]
-        return {**result, "gaussian": run["application"]}
 
     def result(self, run_id: str, log_path: str | None = None, max_bytes: int = 1048576) -> dict:
         if type(max_bytes) is not int or not 1024 <= max_bytes <= 16 * 1024 * 1024:

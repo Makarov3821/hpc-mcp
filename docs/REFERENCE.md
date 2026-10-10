@@ -69,7 +69,7 @@ CLI 对应 application-list/get/install/update/review-request/review-submit/acti
 
 `launcher.kind="srun"` 仅用于 Slurm，自动加 `--ntasks` 和 `--cpus-per-task`；`mpirun`／`mpiexec` 自动加 `-np`／`-n`。任务／CPU／节点计数不允许被 arguments 覆盖。srun 转发 mpi、cpu-bind、distribution、hint、label、unbuffered、exclusive、kill-on-bad-exit 选项；MPI 转发 map-by、bind-to、rank-by、mca、host、hostfile、oversubscribe 及部分 MPICH 的 bootstrap/bind-to/hostfile/genv/env 选项。不接受任意别名或多应用 config。`--map-by` 中 PE 须匹配 cpus，ppr:N:node 须匹配显式 tasks_per_node。
 
-OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超过 cpus。LSF slots 的 CPU 作用范围与 MPI host/bootstrap/binding 必须按实际站点配置；不会自动从分配槽位推导正确主机文件。[LSF span 语义](https://www.ibm.com/docs/SSWRJV_10.1.0/lsf_admin/span_string.html)、[Slurm GPU 资源](https://slurm.schedmd.com/gres.html)。LSF 自定义 resource requirement 不能再包含 span；声明 lsf_gpu 时也不能叠加 GPU 资源表达式。Gaussian 辅助不支持 MPI/Linda，通用生成器新增 MPI 不改变该限制。
+OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超过 cpus。LSF slots 的 CPU 作用范围与 MPI host/bootstrap/binding 必须按实际站点配置；不会自动从分配槽位推导正确主机文件。[LSF span 语义](https://www.ibm.com/docs/SSWRJV_10.1.0/lsf_admin/span_string.html)、[Slurm GPU 资源](https://slurm.schedmd.com/gres.html)。LSF 自定义 resource requirement 不能再包含 span；声明 lsf_gpu 时也不能叠加 GPU 资源表达式。Gaussian 输入分析不提供 MPI/Linda 执行适配。
 
 `container` 字段：runtime 默认 apptainer，可选 singularity；image 必填远程绝对文件路径，运行前检查可读；binds 默认为空数组，每项为 `{source, destination, read_only=true}`，路径必须绝对且不能含逗号／冒号；gpu 可选 nv/rocm，须同时请求调度器 GPU。启动顺序为 launcher → container exec → command。运行时必须支持 --no-eval；声明环境通过 APPTAINERENV_／SINGULARITYENV_ 显式传入，避免镜像默认值覆盖及二次求值。自动以 rw 挂载 run cwd 并设置容器 cwd，保持相对输入／输出位置。镜像、初始化脚本和挂载内容是可信远程依赖，既不复制到输入快照，也不保证每个节点的可用性、镜像不可变或 MPI ABI 兼容。[Apptainer exec](https://apptainer.org/docs/user/latest/cli/apptainer_exec.html)、[环境与求值](https://apptainer.org/docs/user/latest/environment_and_metadata.html)、[SingularityCE exec](https://docs.sylabs.io/guides/4.6/user-guide/cli/singularity_exec.html)。
 
@@ -101,7 +101,7 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 
 每个计划保存模板名、版本、定义校验值、完整定义、参数和实际脚本；准备快照变化会阻止提交，原目录变化不会改变快照。模板更新对已有计划无影响；每次重新规划创建新 run。模板操作不自动修改计算输入卡，也不扫描其他任务。目录回传与缓存规则保持不变。
 
-CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-get NAME [--version N]`、`template-plan NAME CLUSTER INPUT_DIR --parameters JSON [--version N] [--project-root A]`、`template-run PLAN_ID`。模板定义最大 256 KiB；名称最长 100 字符，使用字母／数字／点／下划线／短横线。此阶段尚未实现任意 Shell/Python 提交入口的源码导入。
+CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-get NAME [--version N]`、`template-plan NAME CLUSTER INPUT_DIR --parameters JSON [--version N] [--project-root A]`、`template-run PLAN_ID`。模板定义最大 256 KiB；名称最长 100 字符，使用字母／数字／点／下划线／短横线。任意 Shell/Python 提交入口通过应用 handler 迁移，模板接口不自动导入源码。
 
 ## 设置层级
 
@@ -302,7 +302,7 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 
 ## 工作流与用量统计
 
-### 工作流接口（7C）
+### 工作流接口
 
 | MCP 工具 | 参数与动作 |
 | --- | --- |
@@ -343,7 +343,7 @@ files 每条边至多 64 项，source／target 均为字面相对路径，不支
 
 CLI 将工具名下划线换为连字符；workflow-plan 的 run_ids 为位置参数，依赖使用 `--dependencies-file /ABS/edges.json`，限制使用 `--limits '{"max_in_flight":1}'`。workflow-start 使用 `--confirmation-note`，workflow-retry 后列初始任务编号。所有命令沿用统一配置／状态路径。
 
-### 记账接口（7E）
+### 记账接口
 
 - `job_usage(run_id, refresh=true)`：对已确认提交的单任务查询 LSF bacct／Slurm sacct，并核对编号和 run 名。返回 usage 中的 metrics、declared_resources、missing_metrics、source 和 checked_at；申请值来自准备时生成器定义，普通脚本没有该定义则未知。`refresh=false` 只读缓存。失败刷新保留旧记录并标记 stale；记录过期、权限不足、身份歧义不能解释为零用量。
 - `usage_report(cluster=null, project_root=null, since=null, until=null, limit=500, offset=0)`：只汇总已缓存登记任务，limit 1..5000，offset 非负；时间边界为带时区 ISO 格式，过滤**本地任务创建时间**，不是集群记账结束时间。返回 total_matching_runs、truncated、stale_runs；totals 是当前页汇总，每个指标附 known_runs／missing_runs。无已知值则 sum=null，不累加峰值内存。

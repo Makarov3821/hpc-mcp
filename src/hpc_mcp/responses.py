@@ -18,9 +18,4 @@ def preparation_receipt(result, compact=True):
             ('application', 'version', 'review_token', 'parameters')}
     if 'plan_id' in result:
         receipt['plan_id'] = result['plan_id']
-    if 'gaussian' in result:
-        receipt['gaussian'] = {key: result['gaussian'][key] for key in
-            ('kind', 'input', 'changes', 'diff', 'log', 'expected_sections',
-             'original_sha256', 'effective_sha256')}
-        receipt['run']['application'] = receipt['gaussian']
     return receipt

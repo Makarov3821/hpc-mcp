@@ -56,13 +56,13 @@ def main():
     probe.add_argument('--cluster')
     probe.add_argument('--queue-details', action='store_true')
     sub.add_parser('onboarding-report').add_argument('report_id')
-    draft = sub.add_parser('profile-draft')
+    draft = sub.add_parser('profile-draft', help='Legacy command; reports application migration required')
     draft.add_argument('name')
     draft.add_argument('cluster')
     draft.add_argument('application')
     draft.add_argument('definition_file')
     draft.add_argument('--report-id', action='append')
-    confirm = sub.add_parser('profile-confirm')
+    confirm = sub.add_parser('profile-confirm', help='Legacy command; reports application migration required')
     confirm.add_argument('profile_id')
     confirm.add_argument('review_token')
     confirm.add_argument('--confirmation-note', required=True)
@@ -74,7 +74,7 @@ def main():
     profile_list.add_argument('--limit', type=int, default=50)
     profile_list.add_argument('--offset', type=int, default=0)
     profile_list.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
-    profile_plan = sub.add_parser('profile-plan')
+    profile_plan = sub.add_parser('profile-plan', help='Legacy command; reports application migration required')
     profile_plan.add_argument('input_dir')
     profile_plan.add_argument('--profile-id')
     profile_plan.add_argument('--cluster')
@@ -82,11 +82,11 @@ def main():
     profile_plan.add_argument('--parameters', default='{}')
     profile_plan.add_argument('--project-root')
     profile_plan.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
-    validate = sub.add_parser('profile-validate')
+    validate = sub.add_parser('profile-validate', help='Legacy command; reports application migration required')
     validate.add_argument('profile_id')
-    validate.add_argument('--command', help='JSON short validation argv; prepares only')
+    validate.add_argument('--command', help='Legacy validation argv')
     validate.add_argument('--parameters', help='JSON template bindings')
-    validate.add_argument('--run-id', help='Assess an existing submitted validation probe')
+    validate.add_argument('--run-id', help='Legacy validation probe ID')
     for action in ("monitor-start", "monitor-run"):
         monitor = sub.add_parser(action, help="Detached coordinator start or foreground service process")
         monitor.add_argument("--settings", help="JSON settings; omit to reuse persisted defaults")
@@ -120,16 +120,9 @@ def main():
     gaussian = sub.add_parser("gaussian-prepare")
     gaussian.add_argument("cluster")
     gaussian.add_argument("input_file")
-    gaussian.add_argument("spec_file", nargs='?', help='Omit to reuse the confirmed Gaussian default')
     gaussian.add_argument("--project-root", required=True)
-    gaussian.add_argument("--output", action="append")
-    gaussian.add_argument("--changes", help="JSON snapshot-only cpus/memory/paths overrides")
-    gaussian.add_argument('--profile-id')
-    gaussian.add_argument('--parameters', help='JSON declared profile binding overrides')
+    gaussian.add_argument('--parameters', help='JSON registered handler parameters')
     gaussian.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
-    gaussian.add_argument("--dependency", action="append")
-    gaussian.add_argument("--allow-unresolved", action="store_true")
-    gaussian.add_argument("--max-input-bytes", type=int)
     result = sub.add_parser("gaussian-result")
     result.add_argument("run_id")
     result.add_argument("--log-path")
@@ -282,8 +275,6 @@ def main():
             elif action == 'cleanup': data = apps.cleanup(args.older_than_seconds, not args.apply)
             elif action == 'validate': data = apps.validate(args.run_id)
             elif args.action == 'gaussian-prepare':
-                if args.spec_file or args.profile_id or args.changes or args.output or args.dependency:
-                    raise ValueError('Gaussian execution requires a registered handler; use declared parameters, not a generic spec')
                 data = preparation_receipt(apps.prepare('gaussian', args.cluster, args.input_file, args.project_root,
                     json.loads(args.parameters) if args.parameters else None), args.compact)
             else:
@@ -361,22 +352,10 @@ def main():
                     args.path, args.module_avail, args.max_module_bytes, args.timeout, args.cluster, args.queue_details)
             elif args.action == 'onboarding-report':
                 data = {'ok': True, 'report': profiles.store.get(args.report_id)}
-            elif args.action == 'profile-draft':
-                data = profiles.draft(args.name, args.cluster, args.application,
-                    json.loads(Path(args.definition_file).read_text()), args.report_id)
-            elif args.action == 'profile-confirm':
-                data = profiles.confirm(args.profile_id, args.review_token, args.confirmation_note, args.make_default)
             elif args.action == 'profile-get':
                 data = profiles.get(args.profile_id)
-            elif args.action == 'profile-list':
-                data = profiles.list(args.cluster, args.application, args.limit, args.offset, args.compact)
-            elif args.action == 'profile-plan':
-                from .responses import preparation_receipt
-                data = preparation_receipt(profiles.plan(args.input_dir, args.profile_id, args.cluster, args.application,
-                                     json.loads(args.parameters), args.project_root), args.compact)
             else:
-                data = profiles.validate(args.profile_id, json.loads(args.command) if args.command else None,
-                                         json.loads(args.parameters) if args.parameters else None, args.run_id)
+                data = profiles.list(args.cluster, args.application, args.limit, args.offset, args.compact)
             print(json.dumps(data, ensure_ascii=False, indent=2))
             if not data.get('ok', True):
                 sys.exit(1)

@@ -5,7 +5,6 @@ import shlex
 import subprocess
 import tempfile
 import time
-import os
 
 from .config import Cluster
 from .ssh import CommandResult, ssh_options

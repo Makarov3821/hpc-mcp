@@ -4,7 +4,7 @@
 
 这是供 Codex、OpenCode 等 agent 使用的本地 stdio MCP 服务。通过用户已有的 SSH 配置管理 LSF／Slurm 集群：环境检查、队列查询、普通批处理作业提交、历史、状态、日志、取消和结果同步。
 
-**Agent 按本指南完成安装、注册、集群引导和验收。** MCP 服务不调用模型 API，不需要 OpenAI API key。完整参数见 [接口参考](docs/REFERENCE.md)，目标集群验收见 [测试清单](docs/PLUGIN_TESTING.md)，功能路线见 [PLAN.md](PLAN.md)。
+**Agent 按本指南完成安装、注册、集群引导和验收。** MCP 服务不调用模型 API，不需要 OpenAI API key。完整参数见 [接口参考](docs/REFERENCE.md)，目标集群验收见 [测试清单](docs/PLUGIN_TESTING.md)。
 
 ## 1. 确定安装位置与前置条件
 
@@ -275,138 +275,34 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；默认不启动后台协调器；需要服务内自动保留策略时显式使用下节 monitor 工具。相同选择规则、目标和远程文件指纹下，失败下载可复用暂存续传；规则或文件变化时创建新尝试。
 
-## 6. 低层脚本与任务管理
+## 6. 低层工具、同步与监控
 
-下面的通用生成工具只用于用户明确指定的脚本／资源，不能作为未注册软件的自动执行回退。日常应用任务优先使用已注册 handler。
+日常应用任务使用已注册 handler。用户明确指定脚本和资源时，可使用 `script_generate`、`job_prepare_generated` 或版本化模板；参数与边界集中在 [接口参考](docs/REFERENCE.md)。
 
-`script_generate(scheduler, spec)` 只返回可审查的 Bash 脚本。`spec.command` 是程序和参数组成的列表，可指定 `stdin`／`stdout`／`stderr` 相对路径、`environment` 和计算节点使用的远程绝对 `init_scripts`。`resources` 支持队列／分区、CPU、内存和时间；完整字段见 [接口参考](docs/REFERENCE.md)。默认生成单任务共享内存脚本，也支持显式 MPI 布局、GPU 和容器；每个计划仍对应一个独立调度作业。
-
-例如直接准备 Gaussian 作业，脚本只写入 agent 状态目录中的输入快照，原目录不新增脚本：
-
-```json
-{
-  "cluster": "lab",
-  "project_root": "/ABS/A",
-  "input_dir": "/ABS/A/B",
-  "spec": {
-    "command": ["g16"],
-    "stdin": "test1.gjf",
-    "stdout": "test1.log",
-    "resources": {"queue": "USER_QUEUE", "cpus": 4, "time_minutes": 60}
-  },
-  "input_files": ["test1.gjf"],
-  "outputs": ["test1.log", "test1.chk"]
-}
-```
-
-调用 `job_prepare_generated` 后检查返回的 `rendered.script`、上传清单和提交命令，再用 `job_submit(run_id)` 提交。显式输入列表会自动加入生成脚本和声明的 stdin；其他依赖须自行列出。生成脚本默认名 `hpc-mcp-job.sh`，存在同名输入时拒绝准备。
-
-反复使用时导入 [LSF 模板](examples/templates/gaussian-lsf.json) 或 [Slurm 模板](examples/templates/gaussian-slurm.json)：
-
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state \
-  template-import gaussian /ABS/HPC_MCP/repo/examples/templates/gaussian-lsf.json
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state \
-  template-plan gaussian lab /ABS/A/B --project-root /ABS/A \
-  --parameters '{"input":"test1.gjf","stem":"test1","checkpoint":"test1.chk","queue":"USER_QUEUE","cpus":4}'
-# 核对计划后执行，PLAN_ID 是上一步返回的 plan_id：
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state template-run PLAN_ID
-```
-
-MCP 对应 `template_import(name, definition)`、`template_plan(...)`、`template_run(plan_id)`；`template_list`／`template_get` 查询保存的模板和历史版本。CLI 示例文件路径也须替换成实际绝对路径。模板保存在同一个状态数据库中，每次导入创建新版本。参数通过 `{{name}}` 绑定，支持 string／integer／boolean；没有默认值的参数必须提供，不执行表达式。
-
-`template_plan` 会创建本地输入快照，但不上传或提交；`plan_id` 就是 `run_id`。计划固定模板版本、参数、最终脚本和输入清单，之后编辑模板或原输入不会改变它。`template_run` 只执行该计划，重复调用遵循已有提交防重与回执恢复规则；重新准备或重跑计算应创建新计划。状态、日志、回传和缓存清理继续使用同一个 `run_id`。
-
-Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%nprocshared`、内存、运行时间以及计算节点的 g16 环境；续算 chk 等依赖必须加入模板输入列表。Slurm 内存区分 `job` 与 `per_cpu`；LSF 要求明确使用 `lsf_reservation`，其预留作用范围由站点配置决定，不表示硬内存限制。Bash 和 Python 脚本可先静态分析；动态 Python 入口的完整转换与任意 Shell 自动导入仍未实现。
-
-### 分析现有脚本与准备 MPI／GPU 作业
-
-先调用 `script_inspect(script_path)`；远程脚本传 cluster 和远程绝对路径。也可运行：
+现有脚本先用 `script_inspect` 只读分析，核对 SHA、行号与未解析项，再编写 handler 或导入低层模板。分析不执行原源码，Python 提交器不能直接作为批处理脚本提交。示例见 [脚本分析](examples/inspection/) 和 [MPI／GPU／容器资源](examples/resources/)；远程路径与队列须按站点调整。
 
 ```bash
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  script-inspect /ABS/HPC_MCP/repo/examples/inspection/slurm.sh
+  --state-dir /ABS/HPC_MCP/state script-inspect /remote/job.sh --cluster lab
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  script-inspect /remote/job.sh --cluster lab
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  script-generate slurm /ABS/HPC_MCP/repo/examples/resources/mpi-slurm.json
+  --state-dir /ABS/HPC_MCP/state script-generate slurm /ABS/HPC_MCP/repo/examples/resources/mpi-slurm.json
 ```
 
-分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后用于编写应用 handler，或在用户明确要求时导入独立低层模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，存档的 qg16／qvasp 提交器已有只读分析测试，应用 handler 迁移样例与原生成对照见 examples/applications 和插件指南。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
+需要反复使用声明资源的模板时，可参考 [LSF](examples/templates/gaussian-lsf.json)／[Slurm](examples/templates/gaussian-slurm.json) 定义。`template_import` 保存新版本，`template_plan` 固定参数和输入快照；核对计划后 `template_run` 才提交。后续状态、日志与回传使用该计划的 run_id。
 
-MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_node 和 launcher；OpenMP 线程在 environment 明确设置。Slurm 可指定精确均匀节点布局；LSF 按总 slots 和每 host 的 ptile 表达，不声称精确多节点数。GPU 使用 scheduler 专用 slurm_gres／slurm_gpus_per_task／lsf_gpu，容器支持可信远程 Apptainer／Singularity 镜像、显式挂载和单节点 scratch。镜像及软件不随任务上传；scratch 不改变输出 cwd，不自动回传中间文件。
+`gaussian_inspect` 只读分析输入卡；注册 handler 后使用 `application_prepare` 或 `gaussian-prepare`。回传日志后用 `gaussian_result(run_id, log_path="test1.log")` 分析终止证据，或用 `application_validate` 检查插件判据。输入卡修改由 agent 明确完成，应用结果与调度状态分开记录。
 
-[资源示例](examples/resources/) 中的远程路径、GPU 型号、启动器参数都是占位，agent 应先取得用户的站点设置，核对生成脚本与输入清单再准备／提交；MPI 主机发现、CPU binding、容器 ABI 和共享存储需要目标环境验证。参数和兼容限制见 [接口参考](docs/REFERENCE.md)。
+### 同步与存储
 
-### Gaussian 输入与应用结果分析
+大文件先 `job_sync_preview` 检查选择、容量与空间，再 `job_sync`；需要后台传输时用 `job_sync_start`，保存 operation_id 并通过 `job_sync_operation` 查询。失败后先核对诊断与续传条件。结果归位及覆盖策略见第 5 节；完整限制见 [同步参考](docs/REFERENCE.md#同步预检续传与异步操作)。
 
-`gaussian_inspect(input_file)` 仍是只读分析工具，保留行号、Link0／Link1、资源与 checkpoint 证据，不提供内置执行方案。注册 Gaussian handler 后用 application_prepare 或重启后的 gaussian_prepare 准备，再用 job_submit 提交。CLI gaussian-prepare 只调用注册 handler，不接受旧 spec／changes 回退。
-
-输入卡由 agent 在任务目录中明确规范，核数／内存／checkpoint 的修改不隐式发生在插件里。回传日志后，可用 `gaussian_result(run_id, log_path="test1.log")` 做已有 Gaussian 终止分析；也可用 application_validate 核对 manifest 的显式标记。应用终止与调度 DONE 分开记录，均不保证所有科学结果正确。
-
-### 大文件同步与存储管理
-
-先预览，再同步；大传输优先使用独立同步操作：
-
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  sync-preview RUN_ID --include '*.log' --include '*.chk' \
-  --max-file-bytes 10737418240 --max-total-bytes 21474836480
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  sync-start RUN_ID --options '{"includes":["*.log","*.chk"],"stable_only":true,"resume":true}'
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state sync-operation OPERATION_ID
-```
-
-对应 MCP 为 `job_sync_preview`、`job_sync_start`、`job_sync_operation`。后台 worker 仅执行这一次同步，不监控其他任务；本地机器仍需开机。操作和进度保存在原状态目录，MCP 重启后可以查询。失败或中断后先检查操作，再重试同步；不会重交计算任务。
-
-`job_sync` 自动预检文件选择、单文件／总量与空间。默认单文件 10 GiB、总量 20 GiB、预留 256 MiB；预检按所选大小的两倍估算暂存和安装空间，可通过集群设置或本次参数调整。大小／mtime 在传输后复查，变化或缺文件则保留暂存并拒绝安装。`stable_only=true` 要求传输前后都能确认终态；普通运行中同步保留 partial 标记。预检和周期性占用检查不是文件系统硬配额，也不能提供远程文件的原子快照。
-
-`resume` 默认开启：只有失败暂存的文件清单、时间信息和同步选项一致时才复用；rsync partial 文件可作为增量传输依据，返回 `sync_resumed` 与可用的 `sync_transfer_stats`。改变规则或源文件会新建暂存，旧缓存由清理工具处理。归位冲突时先检查已有结果，再明确选择 `overwrite=merge`，不自动覆盖输入卡。
-
-各类清理独立控制，默认预览，确认范围后才应用：
-
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  cache-cleanup RUN_ID --older-than-seconds 86400
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  storage-cleanup RUN_ID --category snapshot --category sync_history
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  input-cache-cleanup --older-than-seconds 86400 --max-cache-bytes 10737418240
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state remote-cleanup RUN_ID
-# 在核对上述预览后，对对应命令加 --apply。
-```
-
-`job_storage_cleanup` 只处理终态且所选输出同步完成的登记作业；可删除输入快照、旧输出快照和输出归档，保留历史及最新结果。删除快照后不能从这些文件重放任务。集群 `input_cache=true` 可启用共享内容缓存和独立 CoW 快照，默认关闭；空间收益取决于文件系统，不支持 reflink 时复制会增加占用，缓存清理不删除任务快照。
-
-`job_remote_cleanup` 默认保留远程目录。应用清理需重新确认调度终态、验证已下载文件及原始提交回执，路径严格限定登记 run；**未选择回传的远程文件也会被永久删除**，必须先核对要保留的结果。单次清理工具不自带定时器；Phase 6 协调器可按明确启用的策略定期执行本地保留，自动远程删除始终关闭。
+`job_cache_cleanup`、`job_storage_cleanup`、`input_cache_cleanup` 和 `job_remote_cleanup` 默认预览，核对后才显式应用。删除输入快照会失去重放材料；远程清理只保护已经选择并校验的下载结果。参数与保护条件见 [存储参考](docs/REFERENCE.md#存储与远程清理)。
 
 ### 显式启用常驻监控
 
-提交确认后，由 agent 只登记用户选定的 run，再启动协调器。默认 auto_sync=true，清理关闭；策略在登记时固定，不因 agent 退出而丢失：
+先 `monitor_watch` 登记已提交 run 与固定同步策略，再 `monitor_start` 启动协调器；登记本身不启动。通过 `monitor_status` 和 `monitor_notifications` 查询进度、完成或需处理事件。`monitor_stop` 请求优雅停止，随后查询状态确认退出，已有 detached 同步 worker 可独立完成。
 
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state \
-  monitor-watch RUN_ID --sync-options '{"includes":["test1.log","test1.chk"],"overwrite":"error"}'
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state monitor-start
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state monitor-status
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  monitor-notifications --after-id 0
-```
-
-MCP 同名工具使用下划线。项目作业默认回原任务目录，暂存仍位于 A/.hpc-mcp-sync；协调器配置、日志和事件均在原 agent 状态目录。查询确认终态后回传，失败退避；连续同步失败到上限进入 needs_attention，agent 应报告错误并核对后用 monitor_watch(reset=true) 重新启用，不能自动改变覆盖规则。完成事件包含调度结局与结果路径；Gaussian 还应调用 gaussian_result 判断应用结果。agent 保存通知游标，重新连接后补读，通知不是桌面推送。
-
-仅跟踪时使用 auto_sync=false／CLI --no-auto-sync；monitor_unwatch 停止安排该 run 后续动作。monitor_stop 请求协调器退出，monitor_status 确认 stopped；已开始的 detached worker 和清理可能继续完成，远程作业不会因此取消。重启会接管未结束 worker，断网或记账缺失不触发重复提交，也不据陈旧终态清理数据。
-
-可选 cleanup_policy：`{"sync_cache_age_seconds":86400,"storage_categories":["sync_history","old_outputs"],"storage_age_seconds":604800}`。需要删除输入快照时显式加入 snapshot，删除后不能从这些文件重放。清理前重新确认终态并校验下载结果，保留项目输出和历史。全局输入缓存保留在 monitor_start.settings.input_cache_cleanup 独立启用。查询周期、预算、并发、同步容量和通知上限均由 [接口参考](docs/REFERENCE.md) 列出；示例见 [examples/monitor](examples/monitor/)。
+自动清理默认关闭，需明确设置 cleanup_policy；查询预算、重试和保留策略见 [监控参考](docs/REFERENCE.md#常驻监控与自动整理)，配置示例见 [examples/monitor](examples/monitor/)。
 
 本机关闭／休眠期间无法查询或下载，远程作业仍按调度器管理；醒来后按最新状态继续，不补跑积压轮询。detached 进程可跨 MCP 客户端退出，但不自动开机启动，注销时能否保留也取决于本机会话管理。需要服务托管时，可审查 [systemd 用户单元模板](examples/monitor/hpc-mcp-monitor.service)，将其中 /ABS/REPO 设为安装根目录下的 repo，/ABS/CONFIG 设为 clusters.toml，/ABS/STATE 设为 state；使用实际绝对路径替换后安装到 ~/.config/systemd/user/hpc-mcp-monitor.service；它使用前台 monitor-run 和已有登记策略，不要同时另起 monitor-start：
 
@@ -426,28 +322,9 @@ systemctl --user daemon-reload
 
 ### 批量任务、依赖与用量
 
-每个输入卡／任务目录先独立 prepare，核对资源、环境和输出规则。用 `workflow_plan` 将选定的 prepared run 登记为一个持久工作流，默认禁用；向用户展示计划中的任务、依赖、文件映射和限制。取得这份计划的明确授权后，调用 `workflow_start(workflow_id, review_token, confirmation_note)`。它只启用计划；`workflow_tick` 或已启动的监控协调器才逐项提交。
+多个独立 prepared run 用 `workflow_plan` 登记；核对精确计划后 `workflow_start` 记录授权，再通过 `workflow_tick` 或协调器推进。停止后续提交用 `workflow_pause`；停止监控不撤销工作流授权。依赖映射和失败处理见 [工作流参考](docs/REFERENCE.md#工作流接口)。
 
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  workflow-plan project RUN_B RUN_D --limits '{"max_in_flight":1,"submissions_per_minute":2}'
-# 核对返回的计划并记录用户授权后：
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state \
-  workflow-start WORKFLOW_ID REVIEW_TOKEN --confirmation-note '用户授权上述任务和限制'
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state workflow-tick WORKFLOW_ID
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state workflow-status WORKFLOW_ID
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state workflow-pause WORKFLOW_ID
-```
-
-所有命令继续使用相同的 `--config`／`--state-dir`。在途数量包括排队、运行、挂起及提交结局未知的任务，仅限制这个工作流；不是调度器实际运行数或整个账户配额。已登记的任务由工作流统一提交，普通 job_submit 不能绕过限制。暂停停止后续提交，不取消已交作业；上传失败可显式 workflow_retry，拒绝提交或计算失败需要准备新任务。未知提交先恢复回执，不盲目重交。
-
-依赖分别表达调度成功、应用成功及文件就绪；应用成功目前仅支持 gaussian_prepare 的 Gaussian 元数据。显式文件映射可把父任务的 `test1.chk` 交给子任务的 `old.chk`：稳定同步、清单和哈希通过后生成新的执行快照，不覆盖原输入或准备快照。子任务尚不存在的依赖文件不用先伪造；以普通／模板 prepare 准备其余输入即可。`workflow_status.tasks[初始run_id].run_id` 指向实际执行编号，后续查询、同步和取消使用这个编号。
-
-协调器可以在 agent 退出后推进已授权工作流，但不会替它们自动登记最终结果回传。取得实际提交编号后，再用 monitor_watch 登记所需输出与清理策略。依赖文件同步只服务文件交接。具体限制、错误恢复和示例见 [接口参考](docs/REFERENCE.md#工作流与用量统计)。
-
-`job_usage(run_id)` 查询并保存这项任务的记账证据；`usage_report(project_root="/ABS/A")` 汇总已缓存的项目记录，不自动遍历远程历史。区分申请资源、分配 CPU 时间和实际 CPU 时间；缺失值保留 null，失败刷新保留旧证据并标记陈旧。统计范围与 Slurm 峰值 RSS 的口径随结果返回，不自动修改应用配置。准备真机验收时使用 [测试清单](docs/PLUGIN_TESTING.md)。
+`job_usage` 查询单任务记账，`usage_report` 汇总本地缓存；缺失指标保持未知。参数、单位与统计范围见 [记账参考](docs/REFERENCE.md#记账接口)。
 
 ## 7. 更新与旧版本迁移
 
@@ -516,7 +393,7 @@ python3 -m compileall -q src tests
 
 离线回归包括原 qg16 的 256 组、qvasp 的 576 组条件逐字对照，原 CLI 安全预览产物与 MCP 快照比较，LSF／Slurm 模板的离线提交／同步／卸载，以及官方 SDK 现代／旧版 stdio、重启后的动态工具与 schema。完整验收需安装 MCP extra；缺少 SDK 会明确跳过，不能视为协议通过。插件真实 Gaussian／VASP 计算及客户端重启刷新仍需目标环境验收，见 [验收清单](docs/PLUGIN_TESTING.md)。
 
-当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。批量并发控制、任务依赖和用量统计已有实现；数组及复杂 Python 入口完整兼容仍待开发，packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
+当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 输入与结果分析和带预检／续传的同步；常驻监控和自动回传为显式启用。批量并发控制、任务依赖和用量统计已有实现；数组及复杂 Python 入口完整兼容仍待开发，packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)。
 
 ## 许可证
 

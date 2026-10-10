@@ -16,7 +16,7 @@ import uuid
 
 from .config import validate_patterns
 from .history import now
-from .jobs import TERMINAL, relative_path
+from .jobs import relative_path
 from .operations import initialize as initialize_operations
 from .sync_support import positive
 
