@@ -46,5 +46,5 @@ def configuration_file(history, profile):
     except (ValueError, UnicodeError) as exc:
         raise ValueError('profile configuration is not valid JSON') from exc
     if digest(definition) != digest(profile['definition']):
-        raise ValueError('profile configuration changed; import edited JSON as a new profile draft and confirm it')
+        raise ValueError('profile configuration changed; restore the historical definition and migrate using an application handler')
     return path, definition

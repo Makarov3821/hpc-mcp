@@ -136,11 +136,17 @@ class SyncStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete"):
             self.jobs.job_storage_cleanup(run["run_id"])
         self.jobs.job_sync(run["run_id"])
+        # Historical Gaussian snapshots remain eligible for explicit storage cleanup.
+        original = self.jobs.history.root / run["run_id"] / "original-input"
+        original.mkdir()
+        (original / "card.gjf").write_text("historical input")
         preview = self.jobs.job_storage_cleanup(run["run_id"], ["snapshot"], 0)
         self.assertTrue(Path(run["snapshot_dir"]).exists())
-        self.assertEqual(len(preview["candidates"]), 1)
+        self.assertTrue(original.is_dir())
+        self.assertEqual(len(preview["candidates"]), 2)
         self.jobs.job_storage_cleanup(run["run_id"], ["snapshot", "old_outputs"], 0, False)
         self.assertFalse(Path(run["snapshot_dir"]).exists())
+        self.assertFalse(original.exists())
         self.assertTrue((self.source / "results/value.txt").is_file())
         saved = self.jobs.job_get(run["run_id"])
         self.assertTrue(saved["run"]["snapshot_removed"])

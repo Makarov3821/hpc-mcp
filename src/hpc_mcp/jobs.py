@@ -81,9 +81,6 @@ class JobService:
                     max_input_bytes: int | None = None, project_root: str | None = None,
                     input_files: list[str] | None = None, generated_script: str | None = None,
                     template_context: dict | None = None,
-                    input_overrides: dict[str, str] | None = None,
-                    input_sources: dict[str, str] | None = None,
-                    original_inputs: dict[str, str] | None = None,
                     application_context: dict | None = None,
                     generation_context: dict | None = None, prepared_run_id: str | None = None,
                     trusted_handler: bool = False) -> dict:
@@ -109,24 +106,13 @@ class JobService:
                 raise ValueError("project_root cannot be inside the state directory")
             if outputs is None or not outputs or output_mode == "all":
                 raise ValueError("project tasks require explicit filtered outputs")
-        input_sources = input_sources or {}
-        for name, origin in input_sources.items():
-            relative_path(name)
-            original = Path(origin)
-            boundary = project or source
-            if not original.is_file() or original.is_symlink() or not original.resolve().is_relative_to(boundary):
-                raise ValueError("mapped input source must be a regular file within project_root")
-            if any(parent.is_symlink() for parent in original.parents if parent.is_relative_to(boundary)):
-                raise ValueError("mapped input source cannot follow symlinks")
-            if name.startswith((".hpc-mcp-", ".xn02-")):
-                raise ValueError("reserved mapped input filename")
         selected = None
         if input_files is not None:
             if not isinstance(input_files, list) or not input_files:
                 raise ValueError("input_files must be a nonempty list of relative file paths")
             selected = {relative_path(p) for p in input_files} | {script}
             for path in selected:
-                if path in input_sources or (path == script and generated_script is not None):
+                if path == script and generated_script is not None:
                     continue
                 if not (source / path).is_file():
                     raise ValueError(f"selected input must be an existing file: {path}")
@@ -167,15 +153,6 @@ class JobService:
             return skipped
 
         try:
-            for name, origin in input_sources.items():
-                original_relative = Path(origin).resolve().relative_to(project or source).as_posix()
-                for candidate in (name, original_relative):
-                    if any(fnmatch.fnmatchcase(candidate, pattern) or
-                           any(fnmatch.fnmatchcase(part, pattern) for part in PurePosixPath(candidate).parts)
-                           for pattern in policy.input_exclude):
-                        raise ValueError("mapped inputs conflict with input exclusions")
-                if Path(origin).resolve().is_relative_to(self.history.root):
-                    raise ValueError("mapped inputs cannot come from the state directory")
             planned_bytes = 0
             for directory, directories, names in os.walk(source, topdown=True, followlinks=False):
                 skipped = set(ignore(directory, directories + names))
@@ -184,11 +161,7 @@ class JobService:
                     if name in skipped:
                         continue
                     path = Path(directory) / name
-                    relative = path.relative_to(source).as_posix()
-                    if relative in input_sources:
-                        continue
-                    planned_bytes += len(input_overrides[relative].encode()) if input_overrides and relative in input_overrides else path.stat().st_size
-            planned_bytes += sum(Path(path).stat().st_size for path in input_sources.values())
+                    planned_bytes += path.stat().st_size
             if generated_script is not None:
                 planned_bytes += len(generated_script.encode())
             if planned_bytes > policy.max_input_bytes:
@@ -198,16 +171,6 @@ class JobService:
                 from .storage import InputCache
                 copier = InputCache(self.history).copy
             shutil.copytree(source, staged, dirs_exist_ok=True, ignore=ignore, copy_function=copier)
-            for name, origin in input_sources.items():
-                destination = staged / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                copier(origin, destination)
-            for name, content in (input_overrides or {}).items():
-                name = relative_path(name)
-                if not (staged / name).is_file() or not isinstance(content, str):
-                    raise ValueError("input overrides must replace included text files")
-                (staged / name).chmod(0o600)
-                (staged / name).write_text(content)
             if generated_script is not None:
                 destination = staged / script
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -236,7 +199,6 @@ class JobService:
                 "snapshot_dir": str(staged), "script": script, "outputs": patterns,
                 "project_root": str(project) if project else None,
                 "input_files": sorted(selected) if selected is not None else None,
-                "input_sources": input_sources,
                 "output_mode": policy.output_mode, "output_exclude": policy.output_exclude,
                 "input_exclude": policy.input_exclude, "max_input_bytes": policy.max_input_bytes,
                 "manifest": manifest, "excluded": sorted(set(excluded)), "sync_state": "not_synced",
@@ -251,21 +213,8 @@ class JobService:
                 run["generation"] = generation_context
             if template_context is not None:
                 run["template"] = template_context
-            if original_inputs:
-                originals = run_root / "original-input"
-                originals.mkdir()
-                for name, content in original_inputs.items():
-                    name = relative_path(name)
-                    if not isinstance(content, str):
-                        raise ValueError("original input snapshots must be text")
-                    destination = originals / name
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_text(content)
-                run["original_manifest"] = file_manifest(originals)
             if application_context is not None:
                 run["application"] = dict(application_context)
-                if original_inputs:
-                    run["application"]["original_snapshot"] = str(run_root / "original-input" / application_context["input"])
             self.history.add(run)
             return {"ok": True, "run": run}
         except Exception:

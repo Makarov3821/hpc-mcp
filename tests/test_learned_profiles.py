@@ -104,9 +104,15 @@ class LegacyProfileTests(unittest.TestCase):
                                                        '--confirmation-note', 'historical']),
                                   ('profile-plan', [str(self.fixture.source)]),
                                   ('profile-validate', [self.profile['profile_id']])]:
-            with self.subTest(action=action):
-                result = subprocess.run(argv + [action, *arguments], text=True, capture_output=True)
-                self.assertEqual(result.returncode, 1)
-                self.assertIn('requires migration', json.loads(result.stdout)['error'])
+            for legacy_arguments in (arguments, [], ['--unknown-legacy-option', 'value']):
+                with self.subTest(action=action, arguments=legacy_arguments):
+                    result = subprocess.run(argv + [action, *legacy_arguments],
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('requires migration', json.loads(result.stdout)['error'])
+        result = subprocess.run(argv + ['profile-list', '--unknown-option'],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('unrecognized arguments', result.stderr)
         self.assertEqual(self.jobs.job_list()['runs'], [])
         self.assertFalse((self.fixture.root / 'submissions').exists())

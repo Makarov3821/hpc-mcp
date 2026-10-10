@@ -89,4 +89,4 @@ application_update 与 install 使用相同入口，创建新版本，不隐式�
 
 `application-list/get/install/update/review-request/review-submit/activate/prepare/validate/remove/cleanup` 共用上述服务。review-request 接受 `--author-session`，review-submit 接受 `--report-file`；activate 的 review_token 为位置参数，用户确认说明用 `--note`。remove／cleanup 用 `--apply` 才删除。
 
-旧 profile 的写入／准备命令仅返回迁移错误；profile-get/list 保留历史读取。gaussian-prepare CLI 只转发已注册 gaussian，接受 cluster、input_file、必填 `--project-root`，以及 `--parameters`、`--[no-]compact`，不接受旧 spec 或输入改写参数。
+旧 profile 的写入／准备命令仅返回迁移错误，不再校验旧参数；profile-get/list 保留历史读取。gaussian-prepare CLI 只转发已注册 gaussian，接受 cluster、input_file、必填 `--project-root`，以及 `--parameters`、`--[no-]compact`，不接受旧 spec 或输入改写参数。

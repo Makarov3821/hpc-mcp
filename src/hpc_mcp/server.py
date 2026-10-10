@@ -256,7 +256,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     @server.tool()
     def profile_list(cluster: str | None = None, application: str | None = None,
                      limit: int = 50, offset: int = 0, compact: bool = True) -> dict[str, Any]:
-        """Discover saved defaults and parameter schemas without repeating full definitions.
+        """Read legacy profile summaries for migration; these do not authorize execution.
 
         limit 1..500, offset >=0. compact=false returns full records; profile_get reads one in detail.
         """

@@ -56,17 +56,9 @@ def main():
     probe.add_argument('--cluster')
     probe.add_argument('--queue-details', action='store_true')
     sub.add_parser('onboarding-report').add_argument('report_id')
-    draft = sub.add_parser('profile-draft', help='Legacy command; reports application migration required')
-    draft.add_argument('name')
-    draft.add_argument('cluster')
-    draft.add_argument('application')
-    draft.add_argument('definition_file')
-    draft.add_argument('--report-id', action='append')
-    confirm = sub.add_parser('profile-confirm', help='Legacy command; reports application migration required')
-    confirm.add_argument('profile_id')
-    confirm.add_argument('review_token')
-    confirm.add_argument('--confirmation-note', required=True)
-    confirm.add_argument('--make-default', action=argparse.BooleanOptionalAction, default=True)
+    legacy_actions = ('profile-draft', 'profile-confirm', 'profile-plan', 'profile-validate')
+    for action in legacy_actions:
+        sub.add_parser(action, help='Legacy command; reports application migration required')
     sub.add_parser('profile-get').add_argument('profile_id')
     profile_list = sub.add_parser('profile-list')
     profile_list.add_argument('--cluster')
@@ -74,19 +66,6 @@ def main():
     profile_list.add_argument('--limit', type=int, default=50)
     profile_list.add_argument('--offset', type=int, default=0)
     profile_list.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
-    profile_plan = sub.add_parser('profile-plan', help='Legacy command; reports application migration required')
-    profile_plan.add_argument('input_dir')
-    profile_plan.add_argument('--profile-id')
-    profile_plan.add_argument('--cluster')
-    profile_plan.add_argument('--application')
-    profile_plan.add_argument('--parameters', default='{}')
-    profile_plan.add_argument('--project-root')
-    profile_plan.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
-    validate = sub.add_parser('profile-validate', help='Legacy command; reports application migration required')
-    validate.add_argument('profile_id')
-    validate.add_argument('--command', help='Legacy validation argv')
-    validate.add_argument('--parameters', help='JSON template bindings')
-    validate.add_argument('--run-id', help='Legacy validation probe ID')
     for action in ("monitor-start", "monitor-run"):
         monitor = sub.add_parser(action, help="Detached coordinator start or foreground service process")
         monitor.add_argument("--settings", help="JSON settings; omit to reuse persisted defaults")
@@ -254,9 +233,11 @@ def main():
             ap.add_argument('--apply', action='store_true')
         if action == 'application-cleanup':
             ap.add_argument('--older-than-seconds', type=int, default=86400)
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown and args.action not in legacy_actions:
+        parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
-        if args.action in ('profile-draft', 'profile-confirm', 'profile-plan', 'profile-validate'):
+        if args.action in legacy_actions:
             raise ValueError('legacy application profile requires migration; use application-install/review-request/review-submit/activate/prepare')
         if args.action.startswith('application-') or args.action == 'gaussian-prepare':
             from .applications import ApplicationService
