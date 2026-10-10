@@ -27,6 +27,7 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 ├── repo/                 # Git checkout；专用虚拟环境为 repo/.venv/
 ├── clusters.toml         # 集群连接配置
 └── state/                # 历史、输入快照、监控记录
+    ├── onboarding/      # 接入／适配流程的受管工作区
     ├── applications/    # 注册 handler、manifest、来源与版本证据
     └── profiles/*.json   # 旧配置，仅供迁移时读取
 
@@ -105,7 +106,7 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 
 标准包包含 handler.py、manifest.json 和 original/ 原脚本。详细契约、请求／响应、错误与清理边界见 [应用插件指南](docs/APPLICATIONS.md)。插件位于 `state-dir/applications/应用/versions/版本/`，不写源码安装目录或用户项目。
 
-适配时先读取 `settings_get.onboarding.applications_root`，在其中创建唯一的 `.install-draft-*` 暂存目录；改造包、审阅 JSON 和需要的辅助文件全部放在这里，不写入当前工作目录、用户项目或 repo。默认不生成 `GAUSSIAN.md` 等应用说明：MCP 不读取这些文档作为执行配置，实际行为由 handler 与 manifest 决定。来源和审阅报告由 MCP 保存；安装成功且报告持久化后，只删除本次创建的确切暂存目录。中断遗留暂存可通过 application_cleanup 预览后清理。用户明确要求额外说明时，也保存在受管应用包中，不放到工作目录。
+适配时先调用 `setup_flow_create(kind="application_adaptation", request_key="本次唯一意图")`，把改造包、审阅 JSON 和辅助文件写入返回的绝对 workspace，不在工作目录、用户项目或 repo 写学习资料。默认不生成 GAUSSIAN.md：运行行为由 handler 与 manifest 决定。安装并保存报告后，调用 setup_flow_close 引用持久化应用版本，再通过 setup_flow_cleanup 预览／应用清理，保留流程历史。中断用 setup_flow_get/resume 恢复；开放流程禁止清理。接口与状态说明见 [流程工作区指南](docs/SETUP_FLOWS.md)。完整接入与适配步骤门禁将由 Phase 9B 接入，当前工具负责记录与目录生命周期。
 
 1. `application_install(bundle_dir)` 静态保存 draft，返回版本与 review_token，不执行代码。
 2. 调用 `application_review_request(application, version, author_session)`，agent 启动一个全新上下文的独立 reviewer，只提供原脚本、handler、manifest 和接口约束，不传改造对话或作者结论。reviewer 分析所有条件分支、默认值及生成结果差异，返回结构化报告。
@@ -119,7 +120,9 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 [Gaussian](examples/applications/gaussian/) 与 [VASP](examples/applications/vasp/) 是仓库原脚本的迁移样例，**不会自动安装**。先复制到 agent 数据目录，按用户脚本修改 manifest 中 clusters、队列和路径，再独立审阅、用户确认。还有普通 [LSF](examples/applications/hello_lsf/)／[Slurm](examples/applications/hello_slurm/) 模板样例。
 
 ```bash
-# BUNDLE 为已由 agent 改造并整理到数据目录中的应用插件包。
+# 先创建流程，BUNDLE 位于返回的 WORKSPACE/bundle 中。
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --state-dir /ABS/HPC_MCP/state \
+  setup-flow-create application_adaptation --request-key gaussian-lab-001 --label gaussian
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
   --state-dir /ABS/HPC_MCP/state application-install /ABS/BUNDLE
 # 阅读代码后，使用上一步返回的精确版本与 token；note 记录实际审阅。
@@ -128,7 +131,7 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 # 将返回材料交给独立 reviewer，报告也保存在本次数据目录暂存中
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
   --state-dir /ABS/HPC_MCP/state application-review-submit gaussian 1 REVIEW_TOKEN \
-  --report-file /ABS/HPC_MCP/state/applications/.install-draft-UNIQUE/review.json
+  --report-file /ABS/WORKSPACE/review.json
 # 用户确认后才执行：
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
   --state-dir /ABS/HPC_MCP/state application-activate gaussian 1 REVIEW_TOKEN --note '用户确认了该版本与适用集群'

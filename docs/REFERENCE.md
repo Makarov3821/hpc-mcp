@@ -2,6 +2,21 @@
 
 MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；基础工具与已激活应用工具通过 `tools/list` 暴露参数 schema，应用工具数量随注册表变化。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
 
+## 接入／适配流程基础设施
+
+setup_flow 与计算 workflow 分开，资料位于 state/onboarding/<flow_id>/workspace。详见 [流程工作区指南](SETUP_FLOWS.md)。Phase 9A 只固定记录与目录生命周期，业务步骤门禁留到 9B。
+
+| 工具 | 参数／行为 |
+| --- | --- |
+| setup_flow_create | kind,request_key,label=""；幂等创建 cluster_setup 或 application_adaptation，返回 workspace |
+| setup_flow_get / setup_flow_resume | flow_id；读取状态／恢复已记录操作，不授权新提交或激活 |
+| setup_flow_list | limit=50,offset=0；分页流程记录 |
+| setup_flow_events | flow_id,limit=100,after_id=0；分页事件与错误 |
+| setup_flow_close | flow_id,expected_revision,outcome,artifacts=null；completed 引用持久报告／应用版本，或 abandoned |
+| setup_flow_cleanup | flow_id,expected_revision,dry_run=true；仅清理已关闭工作区，保留历史、引用和应用 |
+
+CLI 为 setup-flow-create/get/list/events/resume/close/cleanup；create --request-key 必填，close/cleanup --revision 必填，close 使用 --outcome 与可选 --artifacts-file，cleanup --apply 才删除。无需 clusters.toml 即可使用。
+
 ## 集群引导与应用插件
 
 首次启动无应用处理方法；cluster_probe、cluster_configure、settings_get 提供集群基础引导。script_inspect 只分析用户来源，持久报告可用 onboarding_report 读取；软件发现最多 module avail，不搜索磁盘。profile_get/list 仅保留旧配置历史，旧 profile 写入、准备和验证工具已撤出 MCP。

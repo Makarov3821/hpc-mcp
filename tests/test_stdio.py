@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -38,11 +39,18 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('application_prepare',tools)
                         self.assertIn('job_sync',tools)
                         self.assertIn('workflow_plan',tools)
+                        self.assertIn('setup_flow_create',tools)
+                        self.assertIn('setup_flow_cleanup',tools)
                         self.assertEqual((await call(client,'application_list'))['applications'],[])
                         missing=await call(client,'application_prepare',{'application':'gaussian','cluster':'lab','input_path':str(project/'water.gjf'),'project_root':str(project)})
                         self.assertEqual(missing['error'],'application_not_registered')
                         await call(client,'cluster_configure',{'cluster':'lab','settings':{'ssh_host':'lab','scheduler':'lsf','work_root':'/tmp/hpc-mcp-example'}})
-                        installed=await call(client,'application_install',{'bundle_dir':str(ROOT/'examples/applications/gaussian')})
+                        flow=(await call(client,'setup_flow_create',{'kind':'application_adaptation','request_key':'gaussian-first','label':'gaussian'}))['flow']
+                        workspace=Path(flow['workspace']);self.assertTrue(workspace.is_relative_to(state/'onboarding'))
+                        blocked_cleanup=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'dry_run':False})
+                        self.assertEqual(blocked_cleanup['error'],'setup_flow_in_use')
+                        shutil.copytree(ROOT/'examples/applications/gaussian',workspace/'bundle')
+                        installed=await call(client,'application_install',{'bundle_dir':str(workspace/'bundle')})
                         record=installed['application']; token=record['review_token']
                         blocked=await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'Confirmed but not reviewed.'})
                         self.assertFalse(blocked['ok'])
@@ -52,6 +60,12 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                 'differences':[],'unresolved':[],'allowed_changes':[]}
                         await call(client,'application_review_submit',{'application':'gaussian','version':1,'review_token':token,'report':report})
                         await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'User confirmed exact generator and supported scope.'})
+                        closed=(await call(client,'setup_flow_close',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'outcome':'completed',
+                            'artifacts':[{'kind':'application_version','application':'gaussian','version':1}]}))['flow']
+                        preview=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':closed['revision']})
+                        self.assertTrue(preview['dry_run']);self.assertTrue(workspace.exists())
+                        cleaned=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':closed['revision'],'dry_run':False})
+                        self.assertEqual(cleaned['flow']['state'],'cleaned');self.assertFalse(workspace.exists())
                         prepared=await call(client,'application_prepare',{'application':'gaussian','cluster':'lab','input_path':str(project/'water.gjf'),'project_root':str(project)})
                         run_id=prepared['run']['run_id']
                         self.assertEqual(prepared['run']['phase'],'prepared')
@@ -60,6 +74,9 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('#BSUB -n 28',details['run']['generated_script'])
                     async with Client(params,mode=mode) as client:
                         tools={t.name:t for t in (await client.list_tools()).tools}
+                        restored=await call(client,'setup_flow_get',{'flow_id':flow['flow_id']})
+                        self.assertEqual(restored['flow']['state'],'cleaned')
+                        self.assertEqual(restored['flow']['artifacts'][0]['application'],'gaussian')
                         self.assertIn('gaussian_prepare',tools)
                         self.assertIn('parameters',tools['gaussian_prepare'].input_schema['properties'])
                         model_schema=json.dumps(tools['gaussian_prepare'].input_schema)

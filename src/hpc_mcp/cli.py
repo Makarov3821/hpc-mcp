@@ -233,10 +233,40 @@ def main():
             ap.add_argument('--apply', action='store_true')
         if action == 'application-cleanup':
             ap.add_argument('--older-than-seconds', type=int, default=86400)
+    create_flow = sub.add_parser('setup-flow-create')
+    create_flow.add_argument('kind', choices=('cluster_setup', 'application_adaptation'))
+    create_flow.add_argument('--request-key', required=True)
+    create_flow.add_argument('--label', default='')
+    list_flows = sub.add_parser('setup-flow-list')
+    list_flows.add_argument('--limit', type=int, default=50); list_flows.add_argument('--offset', type=int, default=0)
+    for action in ('setup-flow-get', 'setup-flow-resume', 'setup-flow-events', 'setup-flow-close', 'setup-flow-cleanup'):
+        ap = sub.add_parser(action); ap.add_argument('flow_id')
+        if action in ('setup-flow-close', 'setup-flow-cleanup'): ap.add_argument('--revision', required=True, type=int)
+        if action == 'setup-flow-close':
+            ap.add_argument('--outcome', required=True, choices=('completed', 'abandoned'))
+            ap.add_argument('--artifacts-file')
+        if action == 'setup-flow-cleanup': ap.add_argument('--apply', action='store_true')
+        if action == 'setup-flow-events':
+            ap.add_argument('--limit', type=int, default=100); ap.add_argument('--after-id', type=int, default=0)
     args, unknown = parser.parse_known_args()
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action.startswith('setup-flow-'):
+            from .jobs import JobService
+            from .setup_flows import SetupFlowService
+            flows = SetupFlowService(JobService({}, args.state_dir))
+            action = args.action.removeprefix('setup-flow-')
+            if action == 'create': data = flows.create(args.kind, args.request_key, args.label)
+            elif action == 'list': data = flows.list(args.limit, args.offset)
+            elif action == 'get': data = flows.get(args.flow_id)
+            elif action == 'resume': data = flows.resume(args.flow_id)
+            elif action == 'events': data = flows.events(args.flow_id, args.limit, args.after_id)
+            elif action == 'close': data = flows.close(args.flow_id, args.revision, args.outcome,
+                json.loads(Path(args.artifacts_file).read_text()) if args.artifacts_file else None)
+            elif action == 'cleanup': data = flows.cleanup(args.flow_id, args.revision, not args.apply)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action in legacy_actions:
             raise ValueError('legacy application profile requires migration; use application-install/review-request/review-submit/activate/prepare')
         if args.action.startswith('application-') or args.action == 'gaussian-prepare':

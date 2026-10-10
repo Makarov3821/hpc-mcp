@@ -30,9 +30,9 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "No application execution methods are built in. Call application_list first. "
         "Unknown applications require a user submission template or processing script; never guess a generic execution spec. "
         "Agent migrates source into a standard handler bundle once; application_install only performs static checks. "
-        "Use settings_get.onboarding.applications_root for adaptation staging: allocate an exact temporary "
-        ".install-draft-* directory there, keep handler bundles and review JSON there, and remove only that "
-        "owned staging directory after successful installation and report persistence. Never write learning "
+        "Use setup_flow_create(kind=application_adaptation) for adaptation staging. Use the returned workspace, not an agent-chosen temporary "
+        "directory. Keep handler bundles and review JSON there; close with persisted artifact references and "
+        "preview/apply setup_flow_cleanup after installation and report persistence. Never write learning "
         "artifacts in the user working/project directory or checkout. Do not create GAUSSIAN.md or similar "
         "application summaries by default; Markdown is not executable configuration and is never read for dispatch. "
         "Request an independent fresh-context reviewer for original code and handler changes. Record its report verbatim; revise and install a new version until review passes before user confirmation. "
@@ -56,6 +56,64 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
             return {'ok': False, 'error': exc.code, 'message': str(exc), **exc.details}
         except (ValueError, OSError) as exc:
             return {'ok': False, 'error': 'application_invalid_request' if isinstance(exc, ValueError) else 'application_io_error', 'message': str(exc)}
+
+    from .setup_flows import SetupFlowService, SetupFlowError
+    setup_flows = SetupFlowService(jobs)
+
+    def setup_call(method, *args):
+        try:
+            return method(*args)
+        except SetupFlowError as exc:
+            return {'ok': False, 'error': exc.code, 'message': str(exc)}
+        except (ValueError, OSError) as exc:
+            return {'ok': False, 'error': 'setup_flow_invalid_request' if isinstance(exc, ValueError) else 'setup_flow_io_error', 'message': str(exc)}
+
+    @server.tool()
+    def setup_flow_create(kind: str, request_key: str, label: str = '') -> dict[str, Any]:
+        """Create/recover cluster_setup or application_adaptation with an idempotency key.
+
+        Returns an owned data-directory workspace. Use it for bundles/review JSON. No code
+        execution, cluster configuration, application activation or submission is authorized.
+        """
+        return setup_call(setup_flows.create, kind, request_key, label)
+
+    @server.tool()
+    def setup_flow_get(flow_id: str) -> dict[str, Any]:
+        """Read durable setup state, revision, artifacts and pending action."""
+        return setup_call(setup_flows.get, flow_id)
+
+    @server.tool()
+    def setup_flow_list(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """List setup flows separately from computation workflows and read-only probe reports."""
+        return setup_call(setup_flows.list, limit, offset)
+
+    @server.tool()
+    def setup_flow_events(flow_id: str, limit: int = 100, after_id: int = 0) -> dict[str, Any]:
+        """Read paginated setup events, including interrupted allocation/cleanup diagnostics."""
+        return setup_call(setup_flows.events, flow_id, limit, after_id)
+
+    @server.tool()
+    def setup_flow_resume(flow_id: str) -> dict[str, Any]:
+        """Recover allocating/closing/previously authorized cleaning. Does not advance business steps."""
+        return setup_call(setup_flows.resume, flow_id)
+
+    @server.tool()
+    def setup_flow_close(flow_id: str, expected_revision: int, outcome: str,
+                         artifacts: list[dict] | None = None) -> dict[str, Any]:
+        """Close as completed with persisted report/application references, or explicitly abandoned.
+
+        Base record closure is not proof of configured cluster or activated application.
+        Abandon does not cancel tasks/uninstall applications. Open flows cannot be cleaned.
+        """
+        return setup_call(setup_flows.close, flow_id, expected_revision, outcome, artifacts)
+
+    @server.tool()
+    def setup_flow_cleanup(flow_id: str, expected_revision: int, dry_run: bool = True) -> dict[str, Any]:
+        """Preview/apply deletion of exactly a closed flow's owned workspace. Keep audit and artifacts.
+
+        Apply only for intended cleanup. Never delete the state root, checkout or user project.
+        """
+        return setup_call(setup_flows.cleanup, flow_id, expected_revision, dry_run)
 
     @server.tool()
     def application_list() -> dict[str, Any]:
@@ -371,6 +429,8 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     "configuration_files": str(jobs.history.root / 'profiles' / '<profile_id>.json'),
                     "compact_responses": True,
                     "applications_root": str(applications.root), "application_interface_version": 1,
+                    "setup_flows_root": str(setup_flows.root), "workspace_allocation": "setup_flow_create",
+                    "workspace_cleanup": "setup_flow_close then setup_flow_cleanup preview/apply",
                     "application_tool_refresh": "restart", "legacy_profiles": "migration/read only"},
                 "workflow": {"limits": asdict(WorkflowLimits()), "enabled_by_default": False,
                     "conditions": ["scheduler_succeeded", "application_succeeded", "files_ready"],

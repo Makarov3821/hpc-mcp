@@ -13,7 +13,7 @@ bundle/
 
 安装后位于 `applications/<application>/versions/<version>/`，增加受管理的 `record.json`，保存来源文件 SHA、状态、参数定义、独立审阅报告与真实验证证据。原脚本只存档，不由 MCP 执行。包最多 2 MiB、128 个普通文件，不接受符号链接或保留文件名。插件 ID 为小写字母开头，最多 48 个小写字母／数字／下划线；核心工具命名空间不可占用。
 
-agent 先通过 settings_get 获取 applications_root，在该目录分配唯一 `.install-draft-*` 暂存目录，再写 bundle 与审阅 JSON。不要使用当前工作目录、用户项目或 checkout 存放学习资料；默认不生成 GAUSSIAN.md 等说明文档。Markdown 不参与运行时分发或配置，持久结果是 handler.py、manifest.json、original/ 和 record.json。用户要求的附加说明可放在应用包内。安装和报告提交成功后，agent 清理自己创建的确切暂存目录；失败时可暂留诊断，之后通过 application_cleanup 的预览／应用流程清理。MCP 不会自动删除用户提供的外部源目录。
+agent 先调用 setup_flow_create 创建 application_adaptation 流程，仅在返回的绝对 workspace 内写 bundle 与审阅 JSON，不猜目录或使用当前工作目录、项目、checkout。默认不生成 GAUSSIAN.md，Markdown 不参与运行配置。安装和审阅报告持久化后，setup_flow_close 引用安装版本，再 setup_flow_cleanup 预览／应用清理暂存；失败或中断先 get/resume，开放流程不清理。旧 .install-draft-* 可继续通过 application_cleanup 清理；新的流程工作区只由 setup_flow_cleanup 管理。详见 [流程工作区](SETUP_FLOWS.md)。
 
 ## Manifest
 
