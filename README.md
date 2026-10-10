@@ -103,17 +103,20 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 
 agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，写一个保持原格式的 Python 生成器；批处理器保留原生成函数与条件分支，只改参数／目录接口并拆除直接提交。handler 负责生成；MCP 接管独立任务快照、上传、提交、状态与输出归位。日常不重新解释源码，不在 MCP 内部调用 LLM。
 
-标准包包含 handler.py、manifest.json、original/、cases.json 和原生成参考文件。详细契约、请求／响应、错误与清理边界见 [应用插件指南](docs/APPLICATIONS.md)。插件位于 `state-dir/applications/应用/versions/版本/`，不写源码安装目录或用户项目。
+标准包包含 handler.py、manifest.json 和 original/ 原脚本。详细契约、请求／响应、错误与清理边界见 [应用插件指南](docs/APPLICATIONS.md)。插件位于 `state-dir/applications/应用/versions/版本/`，不写源码安装目录或用户项目。
+
+适配时先读取 `settings_get.onboarding.applications_root`，在其中创建唯一的 `.install-draft-*` 暂存目录；改造包、审阅 JSON 和需要的辅助文件全部放在这里，不写入当前工作目录、用户项目或 repo。默认不生成 `GAUSSIAN.md` 等应用说明：MCP 不读取这些文档作为执行配置，实际行为由 handler 与 manifest 决定。来源和审阅报告由 MCP 保存；安装成功且报告持久化后，只删除本次创建的确切暂存目录。中断遗留暂存可通过 application_cleanup 预览后清理。用户明确要求额外说明时，也保存在受管应用包中，不放到工作目录。
 
 1. `application_install(bundle_dir)` 静态保存 draft，返回版本与 review_token，不执行代码。
-2. agent 展示源码差异、参数默认值、条件分支和未迁移项。代码审阅后，`application_check(application, version, review_token, review_note)` 执行对照案例，提交脚本逐字节相同才通过；不要盲目执行原提交器的预览开关。
-3. 用户核对后 `application_activate(..., confirmation_note)` 激活。重启 MCP 可发现 gaussian_prepare／vasp_prepare 等工具及声明参数；稳定 application_prepare 可以立即使用。
-4. `application_prepare(application, cluster, input_path, project_root, parameters)` 准备独立 run，再按用户意图调用 job_submit。输入卡由 agent 预先规范，不暗中改写。
-5. 授权一个实际小任务，完成后 `application_validate(run_id)` 核对注册判据与日志哈希。确认激活不等于真实验证通过；未配置判据返回 unverified。
+2. 调用 `application_review_request(application, version, author_session)`，agent 启动一个全新上下文的独立 reviewer，只提供原脚本、handler、manifest 和接口约束，不传改造对话或作者结论。reviewer 分析所有条件分支、默认值及生成结果差异，返回结构化报告。
+3. 用 `application_review_submit(..., report)` 原样提交报告；revise 时根据意见修改、安装新版本并重新独立审阅。不存在未批准差异或未决项才能 pass；没有独立 reviewer 能力时保持草稿，不模拟报告。
+4. 独立审阅通过后，用户核对后 `application_activate(..., confirmation_note)` 激活。重启 MCP 可发现 gaussian_prepare／vasp_prepare 等工具及声明参数；稳定 application_prepare 可以立即使用。
+5. `application_prepare(application, cluster, input_path, project_root, parameters)` 准备独立 run，再按用户意图调用 job_submit。输入卡由 agent 预先规范，不暗中改写。
+6. 授权一个实际小任务，完成后 `application_validate(run_id)` 核对注册判据与日志哈希。确认激活不等于真实验证通过；未配置判据返回 unverified。
 
 未注册软件返回 application_not_registered，并请求用户提供模板。不会猜测软件路径、MPI 环境或 Slurm 转换；未迁移的 packing／批量扫描明确排除，多任务用多个独立 run 与 workflow 管理。
 
-[Gaussian](examples/applications/gaussian/) 与 [VASP](examples/applications/vasp/) 是仓库原脚本的迁移样例，**不会自动安装**。先复制到 agent 数据目录，按用户脚本修改 manifest 中 clusters、队列和路径，再审阅、对照、确认。还有普通 [LSF](examples/applications/hello_lsf/)／[Slurm](examples/applications/hello_slurm/) 模板样例。
+[Gaussian](examples/applications/gaussian/) 与 [VASP](examples/applications/vasp/) 是仓库原脚本的迁移样例，**不会自动安装**。先复制到 agent 数据目录，按用户脚本修改 manifest 中 clusters、队列和路径，再独立审阅、用户确认。还有普通 [LSF](examples/applications/hello_lsf/)／[Slurm](examples/applications/hello_slurm/) 模板样例。
 
 ```bash
 # BUNDLE 为已由 agent 改造并整理到数据目录中的应用插件包。
@@ -121,7 +124,11 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
   --state-dir /ABS/HPC_MCP/state application-install /ABS/BUNDLE
 # 阅读代码后，使用上一步返回的精确版本与 token；note 记录实际审阅。
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-check gaussian 1 REVIEW_TOKEN --note '已审阅生成逻辑与对照来源'
+  --state-dir /ABS/HPC_MCP/state application-review-request gaussian 1 --author-session AUTHOR_SESSION
+# 将返回材料交给独立 reviewer，报告也保存在本次数据目录暂存中
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state application-review-submit gaussian 1 REVIEW_TOKEN \
+  --report-file /ABS/HPC_MCP/state/applications/.install-draft-UNIQUE/review.json
 # 用户确认后才执行：
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
   --state-dir /ABS/HPC_MCP/state application-activate gaussian 1 REVIEW_TOKEN --note '用户确认了该版本与适用集群'
@@ -129,7 +136,7 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
   --state-dir /ABS/HPC_MCP/state application-prepare gaussian lab /ABS/A/B/test1.gjf --project-root /ABS/A
 ```
 
-更新走 application_update → check → activate，已有任务绑定旧版。删除先 application_remove 预览，再用 dry_run=false（CLI --apply）执行；未提交／活动任务先处理，输入／输出／任务历史与共享 Python 依赖保留。安装失败暂存和无引用旧版本可用 application_cleanup 清理，默认只预览。
+更新走 application_update → 独立 review → 用户确认 activate，已有任务绑定旧版。删除先 application_remove 预览，再用 dry_run=false（CLI --apply）执行；未提交／活动任务先处理，输入／输出／任务历史与共享 Python 依赖保留。安装失败暂存和无引用旧版本可用 application_cleanup 清理，默认只预览。
 
 CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）：
 
@@ -328,7 +335,7 @@ Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%np
   script-generate slurm /ABS/HPC_MCP/repo/examples/resources/mpi-slurm.json
 ```
 
-分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后用于编写应用 handler，或在用户明确要求时导入独立低层模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，`used-scripts/` 的三个提交器已有只读分析测试，应用 handler 迁移样例与原生成对照见 examples/applications 和插件指南。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
+分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后用于编写应用 handler，或在用户明确要求时导入独立低层模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，存档的 qg16／qvasp 提交器已有只读分析测试，应用 handler 迁移样例与原生成对照见 examples/applications 和插件指南。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
 
 MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_node 和 launcher；OpenMP 线程在 environment 明确设置。Slurm 可指定精确均匀节点布局；LSF 按总 slots 和每 host 的 ptile 表达，不声称精确多节点数。GPU 使用 scheduler 专用 slurm_gres／slurm_gpus_per_task／lsf_gpu，容器支持可信远程 Apptainer／Singularity 镜像、显式挂载和单节点 scratch。镜像及软件不随任务上传；scratch 不改变输出 cwd，不自动回传中间文件。
 

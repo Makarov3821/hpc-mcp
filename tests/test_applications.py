@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def reference(name, function):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', SyntaxWarning)
-        tree = ast.parse((ROOT / 'used-scripts' / name).read_text())
+        tree = ast.parse((ROOT / 'examples/applications' / ('gaussian' if name == 'qg16' else 'vasp') / 'original' / name).read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function)
     namespace = {'Path': Path}
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
@@ -47,35 +47,68 @@ class ApplicationTests(unittest.TestCase):
         (self.bundle / 'manifest.json').write_text(json.dumps(manifest))
         return self.bundle
 
+    def review(self, record, verdict='pass'):
+        packet=self.apps.review_request(record['application'],record['version'],'test-author')['review_request']
+        report={'reviewer_session':'test-independent-reviewer','fresh_context':True,'verdict':verdict,
+                'checks':{k:'Synthetic test evidence for gate mechanics.' for k in packet['required_checks']},
+                'differences':[] if verdict=='pass' else ['Missing original environment setup.'],
+                'unresolved':[],'allowed_changes':['Remote working directory bound to run directory.']}
+        return self.apps.review_submit(record['application'],record['version'],record['review_token'],report)
+
     def register(self, app='gaussian', cluster='lsf'):
         record = self.apps.install(str(self.bundle_for(app, cluster)))['application']
-        self.apps.check(app, record['version'], record['review_token'], 'Reviewed code and original generation references.')
+        self.review(record)
         self.apps.activate(app, record['version'], record['review_token'], 'User reviewed and confirmed exact script rules.')
         return record
 
     def prepare(self, **parameters):
         return self.apps.prepare('gaussian','lsf',str(self.card),str(self.fixture.root),parameters)['run']
 
-    def test_empty_unknown_and_review_activation_gates(self):
+    def test_empty_unknown_and_confirmation_gates(self):
         self.assertEqual(self.apps.list()['applications'], [])
         with self.assertRaises(ApplicationError) as error: self.prepare()
         self.assertEqual(error.exception.code,'application_not_registered')
         record=self.apps.install(str(self.bundle_for()))['application']
+        with self.assertRaises(ValueError): self.apps.activate('gaussian',1,record['review_token'],'')
+        with self.assertRaises(ValueError): self.apps.activate('gaussian',1,'bad','user confirmed')
         with self.assertRaises(ValueError): self.apps.activate('gaussian',1,record['review_token'],'user confirmed')
-        with self.assertRaises(ValueError): self.apps.check('gaussian',1,record['review_token'],'')
-        with self.assertRaises(ValueError): self.apps.check('gaussian',1,'bad','reviewed')
         with self.assertRaises(ApplicationError): self.prepare()
         self.assertFalse((self.fixture.root/'submissions').exists())
 
-    def test_static_install_does_not_run_and_exact_mismatch_fails(self):
-        bundle=self.bundle_for(); (bundle/'references/0.lsf').write_text('incorrect\n')
+    def test_install_and_activate_without_reference_execute_no_code(self):
+        bundle=self.bundle_for()
+        (bundle/'cases.json').unlink(missing_ok=True)
+        shutil.rmtree(bundle/'references',ignore_errors=True)
         with patch('hpc_mcp.applications.subprocess.Popen') as execute:
-            record=self.apps.install(str(bundle))['application'];execute.assert_not_called()
-        with self.assertRaises(ApplicationError) as error:
-            self.apps.check('gaussian',1,record['review_token'],'code reviewed')
-        self.assertEqual(error.exception.code,'application_reference_mismatch')
-        self.assertEqual(self.apps.get('gaussian',1)['application']['status'],'draft')
-        self.assertFalse(list(self.apps.root.glob('.run-*')))
+            record=self.apps.install(str(bundle))['application']
+            self.review(record)
+            self.apps.activate('gaussian',1,record['review_token'],'Source and handler reviewed; user confirmed.')
+            execute.assert_not_called()
+        self.assertFalse(hasattr(self.apps,'check'))
+        self.assertEqual(self.apps.get('gaussian')['application']['status'],'active')
+        self.assertNotIn('comparison',self.apps.get('gaussian')['application'])
+
+    def test_independent_review_rejection_revision_and_version_binding(self):
+        record=self.apps.install(str(self.bundle_for()))['application']
+        self.review(record,'revise')
+        with self.assertRaises(ValueError): self.apps.activate('gaussian',1,record['review_token'],'user confirmed')
+        packet=self.apps.review_request('gaussian',1,'author')['review_request']
+        report={'reviewer_session':'author','fresh_context':True,'verdict':'pass',
+            'checks':{k:'Evidence.' for k in packet['required_checks']},'differences':[],'unresolved':[],'allowed_changes':[]}
+        with self.assertRaises(ValueError): self.apps.review_submit('gaussian',1,record['review_token'],report)
+        report['reviewer_session']='reviewer';report['unresolved']=['Unknown branch.']
+        with self.assertRaises(ValueError): self.apps.review_submit('gaussian',1,record['review_token'],report)
+        report['unresolved']=[];report['fresh_context']=False
+        with self.assertRaises(ValueError): self.apps.review_submit('gaussian',1,record['review_token'],report)
+        second=self.apps.install(str(self.bundle))['application']
+        with self.assertRaises(ValueError): self.apps.activate('gaussian',2,second['review_token'],'user confirmed')
+        self.review(second)
+        with self.assertRaises(ValueError): self.apps.review_submit('gaussian',2,record['review_token'],report)
+        self.apps.activate('gaussian',2,second['review_token'],'user confirmed')
+        stored=self.apps.get('gaussian')['application']
+        self.assertEqual(stored['review']['scope'],'external_fresh_context_static_review')
+        self.assertEqual(stored['review']['provenance'],'client_attested')
+        self.assertEqual(self.apps.get('gaussian',1)['application']['status'],'review_rejected')
 
     def test_qg16_original_direct_and_mcp_snapshot_are_identical(self):
         self.register(); run=self.prepare(exclusive=True,node='node01',exclude_nodes='node02,node03',keep_scratch=True)
@@ -99,14 +132,14 @@ class ApplicationTests(unittest.TestCase):
         self.register();run=self.prepare()
         remote=Path(run['remote_dir']);remote.mkdir(parents=True)
         shutil.copy2(self.card,remote/'water.gjf')
-        subprocess.run([sys.executable,str(ROOT/'used-scripts/qg16'),'water.gjf','-P','-y'],
+        subprocess.run([sys.executable,str(ROOT/'examples/applications/gaussian/original/qg16'),'water.gjf','-P','-y'],
             cwd=remote,env=env,text=True,capture_output=True,check=True)
         self.assertEqual((remote/'water.bsub').read_bytes(),(Path(run['snapshot_dir'])/run['script']).read_bytes())
         self.register('vasp')
         for name in ['INCAR','POSCAR','POTCAR','KPOINTS']:(self.fixture.source/name).write_text('fixture\n')
         run=self.apps.prepare('vasp','lsf',str(self.fixture.source),str(self.fixture.root))['run']
         original_dir=self.fixture.root/'original-vasp';original_dir.mkdir()
-        subprocess.run([sys.executable,str(ROOT/'used-scripts/qvasp'),'-d','vasp'],cwd=original_dir,
+        subprocess.run([sys.executable,str(ROOT/'examples/applications/vasp/original/qvasp'),'-d','vasp'],cwd=original_dir,
             env=env,text=True,capture_output=True,check=True)
         self.assertEqual((original_dir/'vasp.lsf').read_bytes(),(Path(run['snapshot_dir'])/run['script']).read_bytes())
         self.assertFalse((self.fixture.root/'submissions').exists())
@@ -157,7 +190,8 @@ class ApplicationTests(unittest.TestCase):
     def test_version_pinning_restart_and_cluster_change(self):
         first=self.register();run=self.prepare()
         second=self.apps.install(str(self.bundle_for()))['application']
-        self.apps.check('gaussian',2,second['review_token'],'reviewed');self.apps.activate('gaussian',2,second['review_token'],'user confirmed')
+        self.review(second)
+        self.apps.activate('gaussian',2,second['review_token'],'user confirmed')
         restarted=ApplicationService(self.jobs)
         self.assertEqual(restarted.prepare('gaussian','lsf',str(self.card),str(self.fixture.root))['run']['template']['application_plugin']['version'],2)
         self.assertEqual(self.jobs.history.get(run['run_id'])['template']['application_plugin']['version'],1)
@@ -202,7 +236,8 @@ class ApplicationTests(unittest.TestCase):
 
     def test_cleanup_only_unreferenced_and_symlink_rejection(self):
         self.register();oldrun=self.prepare();second=self.apps.install(str(self.bundle_for()))['application']
-        self.apps.check('gaussian',2,second['review_token'],'reviewed');self.apps.activate('gaussian',2,second['review_token'],'confirmed')
+        self.review(second)
+        self.apps.activate('gaussian',2,second['review_token'],'confirmed')
         self.assertEqual(self.apps.cleanup(0)['paths'],[])
         self.jobs.job_cancel(oldrun['run_id'])
         paths=self.apps.cleanup(0,False)['paths'];self.assertEqual(len(paths),1)
@@ -219,7 +254,7 @@ class ApplicationTests(unittest.TestCase):
             bundle=self.bundle_for();(bundle/'handler.py').write_text(script)
             manifest=json.loads((bundle/'manifest.json').read_text());manifest.update(extras);(bundle/'manifest.json').write_text(json.dumps(manifest))
             rec=self.apps.install(str(bundle))['application']
-            with self.assertRaises(ApplicationError) as actual:self.apps.check('gaussian',rec['version'],rec['review_token'],'reviewed')
+            with self.assertRaises(ApplicationError) as actual:self.apps.execute(*self.apps.record('gaussian',rec['version']), {'input_name':'water.gjf','parameters':{}})
             self.assertEqual(actual.exception.code,error)
         self.assertFalse(list(self.apps.root.glob('.run-*')))
 
@@ -235,7 +270,7 @@ class ApplicationTests(unittest.TestCase):
         self.assertIn('dependency.chk',{e['path'] for e in result['manifest']})
         self.assertEqual(file_manifest(Path(run['snapshot_dir'])),run['manifest'])
 
-    def test_cli_install_check_activate_prepare_and_unknown_without_config(self):
+    def test_cli_install_activate_prepare_and_unknown_without_config(self):
         command=[sys.executable,'-m','hpc_mcp','--state-dir',str(self.fixture.state),'--config',str(self.fixture.root/'missing.toml')]
         proc=subprocess.run(command+['application-prepare','missing','lsf',str(self.card),'--project-root',str(self.fixture.root)],capture_output=True,text=True)
         self.assertEqual(proc.returncode,1);self.assertEqual(json.loads(proc.stdout)['error'],'application_not_registered')
@@ -247,7 +282,7 @@ class ApplicationTests(unittest.TestCase):
         manifest['validation']={'log':'result.txt','success_marker':'Normal termination','failure_marker':'Error termination'}
         (bundle/'manifest.json').write_text(json.dumps(manifest))
         record=self.apps.install(str(bundle))['application']
-        self.apps.check('hello_lsf',1,record['review_token'],'reviewed')
+        self.review(record)
         self.apps.activate('hello_lsf',1,record['review_token'],'user confirmed')
         for content,status in [('Normal termination\n','passed'),('Normal termination\nError termination\n','failed')]:
             (self.fixture.source/'input.txt').write_text(content)
@@ -271,7 +306,7 @@ class ApplicationTests(unittest.TestCase):
         self.assertFalse(list(self.apps.root.glob('.install-*')))
         manifest=json.loads((bundle/'manifest.json').read_text());manifest['dependencies']=['hpc_nonexistent_dependency_123']
         (bundle/'manifest.json').write_text(json.dumps(manifest));record=self.apps.install(str(bundle))['application']
-        with self.assertRaises(ApplicationError) as error:self.apps.check('gaussian',record['version'],record['review_token'],'reviewed')
+        with self.assertRaises(ApplicationError) as error:self.apps.execute(*self.apps.record('gaussian',record['version']), {'input_name':'water.gjf','parameters':{}})
         self.assertEqual(error.exception.code,'application_dependency_missing')
 
     def test_default_versions_are_scoped_to_cluster(self):
@@ -282,7 +317,8 @@ class ApplicationTests(unittest.TestCase):
         (bundle/'manifest.json').write_text(json.dumps(manifest))
         # Reference fixtures explicitly bind cpus=28, so changed defaults do not change their inputs.
         record=self.apps.install(str(bundle))['application']
-        self.apps.check('gaussian',2,record['review_token'],'reviewed');self.apps.activate('gaussian',2,record['review_token'],'user confirmed')
+        self.review(record)
+        self.apps.activate('gaussian',2,record['review_token'],'user confirmed')
         first=self.prepare();second=self.apps.prepare('gaussian','other',str(self.card),str(self.fixture.root))['run']
         self.assertEqual(first['generation']['spec']['resources']['cpus'],28)
         self.assertEqual(second['generation']['spec']['resources']['cpus'],24)

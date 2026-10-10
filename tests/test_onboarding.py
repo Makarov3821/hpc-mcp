@@ -219,8 +219,8 @@ class StaticEnvironmentTests(unittest.TestCase):
             self.assertTrue(any(e.get('operation') == 'system' for e in report['evidence']))
             self.assertTrue(report['unresolved'])
             self.assertIsNone(report['template_draft'])
-            for name in ('qg16', 'qrest', 'qvasp'):
-                report = ScriptInspector().inspect(str(Path(__file__).parents[1] / 'used-scripts' / name))
+            for app, name in (('gaussian', 'qg16'), ('vasp', 'qvasp')):
+                report = ScriptInspector().inspect(str(Path(__file__).parents[1] / 'examples/applications' / app / 'original' / name))
                 self.assertTrue(report['constants'], name)
                 self.assertTrue(report['parameters'], name)
 

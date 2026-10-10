@@ -1,9 +1,0 @@
-[
-  {
-    "request": {
-      "parameters": {},
-      "remote_dir": "/tmp/reference-run"
-    },
-    "expected_script": "references/0.sh"
-  }
-]

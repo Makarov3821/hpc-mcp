@@ -1,6 +1,5 @@
 """Build reviewed migration examples from repository sources, never run their submission CLI."""
 import ast
-import itertools
 import json
 from pathlib import Path
 import warnings
@@ -26,10 +25,9 @@ def prop(kind, default, **extra):
 
 def build():
     for app, source in [('gaussian', 'qg16'), ('vasp', 'qvasp')]:
-        text = (ROOT / 'used-scripts' / source).read_text()
+        text = (ROOT / 'examples' / 'applications' / app / 'original' / source).read_text()
         bundle = ROOT / 'examples' / 'applications' / app
         (bundle / 'original').mkdir(parents=True, exist_ok=True)
-        (bundle / 'references').mkdir(exist_ok=True)
         (bundle / 'original' / source).write_text(text)
         header = 'import re\nimport json\nimport sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\n\n'
         if app == 'gaussian':
@@ -64,8 +62,6 @@ def handle(request):
                 'exclude_nodes': prop('string', '', pattern='(?:[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)?'),
                 'local_scratch': prop('boolean', False), 'keep_scratch': prop('boolean', False),
                 'dependencies': prop('array', [], items={'type': 'string'}, maxItems=64)}
-            variants = [{}, {'version': 'C02', 'cpus': 24, 'exclusive': True, 'node': 'node01', 'exclude_nodes': 'node02,node03'},
-                        {'local_scratch': True, 'keep_scratch': True}]
             validation = {'log': '{input_stem}.log', 'success_marker': 'Normal termination of Gaussian', 'failure_marker': 'Error termination'}
         else:
             function = source_function(text, 'cr_vasp_lsf')
@@ -92,8 +88,6 @@ def handle(request):
                 'bin_dir': prop('string','/apps/vasp/bin',pattern='/[A-Za-z0-9_./-]+'),
                 'input_files': prop('array',['INCAR','POSCAR','POTCAR','KPOINTS'],items={'type':'string'},maxItems=128),
                 'outputs': prop('array',['log.out','OUTCAR','CONTCAR','CHGCAR','WAVECAR'],items={'type':'string'},maxItems=128)}
-            variants = [{}, {'queue':'xp40mc12','mpi_version':'2015','vasp_version':'544','optcell':True},
-                        {'mpi_version':'2019','program_type':'ncl','openmp':True,'hdf5':True}]
             validation = None
         code = header + function + '\n' + wrapper + "\nif __name__ == '__main__':\n    print(json.dumps(handle(json.load(sys.stdin))))\n"
         (bundle / 'handler.py').write_text(code)
@@ -102,28 +96,12 @@ def handle(request):
             'parameters':schema(props),'dependencies':[]}
         if validation:manifest['validation']=validation
         (bundle / 'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
-        # Only trusted extracted generating functions run here, not user submission code.
-        namespace = {'__name__':'example_builder'}
-        exec(compile(code,str(bundle / 'handler.py'),'exec'),namespace)
-        cases=[]
-        import tempfile
-        for index,variant in enumerate(variants):
-            p={k:v['default'] for k,v in props.items()};p.update(variant)
-            request={'input_name':'water.gjf' if app=='gaussian' else None,'remote_dir':'/tmp/reference-run',
-                'input_path':'/tmp/reference/water.gjf' if app=='gaussian' else '/tmp/reference',
-                'input_dir':'/tmp/reference','parameters':p}
-            with tempfile.TemporaryDirectory() as temp:
-                result=namespace['handle'](dict(request,staging_dir=temp))
-            name=f'references/{index}.lsf';(bundle/name).write_text(result['script'])
-            cases.append({'request':request,'expected_script':name})
-        (bundle/'cases.json').write_text(json.dumps(cases,indent=2)+'\n')
     for scheduler in ('lsf','slurm'):
         bundle=ROOT/'examples'/'applications'/('hello_'+scheduler)
-        (bundle/'original').mkdir(parents=True,exist_ok=True);(bundle/'references').mkdir(exist_ok=True)
+        (bundle/'original').mkdir(parents=True,exist_ok=True)
         text = '#!/bin/bash\n' + ('#BSUB -q Single\n#BSUB -n 1\n' if scheduler=='lsf' else '#SBATCH --partition=debug\n#SBATCH --ntasks=1\n') + 'cat input.txt > result.txt\n'
-        (bundle/'original'/'job.sh').write_text(text);(bundle/'references'/'0.sh').write_text(text)
+        (bundle/'original'/'job.sh').write_text(text)
         (bundle/'handler.py').write_text('import json,sys\nfrom pathlib import Path\nrequest=json.load(sys.stdin)\nprint(json.dumps({"script": (Path(__file__).parent/"original"/"job.sh").read_text(), "input_files":["input.txt"],"outputs":["result.txt"]}))\n')
         (bundle/'manifest.json').write_text(json.dumps({'interface_version':1,'application':'hello_'+scheduler,'scheduler':scheduler,'clusters':['lab'],'parameters':schema({})},indent=2)+'\n')
-        (bundle/'cases.json').write_text(json.dumps([{'request':{'parameters':{},'remote_dir':'/tmp/reference-run'},'expected_script':'references/0.sh'}],indent=2)+'\n')
 
 if __name__=='__main__':build()

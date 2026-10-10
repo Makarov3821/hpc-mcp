@@ -33,6 +33,8 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         tools={t.name:t for t in (await client.list_tools()).tools}
                         self.assertNotIn('gaussian_prepare',tools)
                         self.assertNotIn('profile_plan',tools)
+                        self.assertNotIn('application_check',tools)
+                        self.assertIn('application_review_request',tools)
                         self.assertIn('application_prepare',tools)
                         self.assertIn('job_sync',tools)
                         self.assertIn('workflow_plan',tools)
@@ -42,7 +44,13 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         await call(client,'cluster_configure',{'cluster':'lab','settings':{'ssh_host':'lab','scheduler':'lsf','work_root':'/tmp/hpc-mcp-example'}})
                         installed=await call(client,'application_install',{'bundle_dir':str(ROOT/'examples/applications/gaussian')})
                         record=installed['application']; token=record['review_token']
-                        await call(client,'application_check',{'application':'gaussian','version':1,'review_token':token,'review_note':'Reviewed handler; original submission code is archived only.'})
+                        blocked=await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'Confirmed but not reviewed.'})
+                        self.assertFalse(blocked['ok'])
+                        packet=(await call(client,'application_review_request',{'application':'gaussian','version':1,'author_session':'test-author'}))['review_request']
+                        report={'reviewer_session':'test-independent-reviewer','fresh_context':True,'verdict':'pass',
+                                'checks':{k:'Synthetic test evidence.' for k in packet['required_checks']},
+                                'differences':[],'unresolved':[],'allowed_changes':[]}
+                        await call(client,'application_review_submit',{'application':'gaussian','version':1,'review_token':token,'report':report})
                         await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'User confirmed exact generator and supported scope.'})
                         prepared=await call(client,'application_prepare',{'application':'gaussian','cluster':'lab','input_path':str(project/'water.gjf'),'project_root':str(project)})
                         run_id=prepared['run']['run_id']

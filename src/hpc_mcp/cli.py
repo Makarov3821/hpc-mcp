@@ -237,7 +237,7 @@ def main():
     logs.add_argument("--stream", choices=("stdout", "stderr"), default="stdout")
     logs.add_argument("--lines", type=int, default=100)
     for action in ('application-list', 'application-install', 'application-update', 'application-get',
-                   'application-check', 'application-activate', 'application-prepare', 'application-remove',
+                   'application-review-request', 'application-review-submit', 'application-activate', 'application-prepare', 'application-remove',
                    'application-cleanup', 'application-validate'):
         ap = sub.add_parser(action)
         if action in ('application-install', 'application-update'):
@@ -246,9 +246,12 @@ def main():
             ap.add_argument('run_id')
         elif action not in ('application-list', 'application-cleanup'):
             ap.add_argument('application')
-            if action in ('application-check', 'application-activate'):
+            if action in ('application-activate', 'application-review-submit'):
                 ap.add_argument('version', type=int); ap.add_argument('review_token')
-                ap.add_argument('--note', required=True)
+                if action == 'application-activate': ap.add_argument('--note', required=True)
+                else: ap.add_argument('--report-file', required=True)
+            elif action == 'application-review-request':
+                ap.add_argument('version', type=int); ap.add_argument('--author-session', required=True)
             elif action in ('application-get', 'application-prepare'):
                 ap.add_argument('--version', type=int)
         if action == 'application-prepare':
@@ -261,7 +264,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.action in ('profile-draft', 'profile-confirm', 'profile-plan', 'profile-validate'):
-            raise ValueError('legacy application profile requires migration; use application-install/check/activate/prepare')
+            raise ValueError('legacy application profile requires migration; use application-install/review-request/review-submit/activate/prepare')
         if args.action.startswith('application-') or args.action == 'gaussian-prepare':
             from .applications import ApplicationService
             from .jobs import JobService
@@ -272,7 +275,8 @@ def main():
             if action == 'list': data = apps.list()
             elif action in ('install', 'update'): data = apps.install(args.bundle_dir)
             elif action == 'get': data = apps.get(args.application, args.version)
-            elif action == 'check': data = apps.check(args.application, args.version, args.review_token, args.note)
+            elif action == 'review-request': data = apps.review_request(args.application, args.version, args.author_session)
+            elif action == 'review-submit': data = apps.review_submit(args.application, args.version, args.review_token, json.loads(Path(args.report_file).read_text()))
             elif action == 'activate': data = apps.activate(args.application, args.version, args.review_token, args.note)
             elif action == 'remove': data = apps.remove(args.application, not args.apply)
             elif action == 'cleanup': data = apps.cleanup(args.older_than_seconds, not args.apply)

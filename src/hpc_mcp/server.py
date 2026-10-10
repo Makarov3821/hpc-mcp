@@ -30,7 +30,12 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "No application execution methods are built in. Call application_list first. "
         "Unknown applications require a user submission template or processing script; never guess a generic execution spec. "
         "Agent migrates source into a standard handler bundle once; application_install only performs static checks. "
-        "Review code before application_check; show reference comparisons and unresolved differences to the user. "
+        "Use settings_get.onboarding.applications_root for adaptation staging: allocate an exact temporary "
+        ".install-draft-* directory there, keep handler bundles and review JSON there, and remove only that "
+        "owned staging directory after successful installation and report persistence. Never write learning "
+        "artifacts in the user working/project directory or checkout. Do not create GAUSSIAN.md or similar "
+        "application summaries by default; Markdown is not executable configuration and is never read for dispatch. "
+        "Request an independent fresh-context reviewer for original code and handler changes. Record its report verbatim; revise and install a new version until review passes before user confirmation. "
         "User confirmation via application_activate is separate from real compute-node validation. "
         "Use registered application handlers for daily prepare; job_submit is separate. Never execute original submission wrappers. "
         "Preview application_remove before deleting; preserve user computation data and history."))
@@ -59,37 +64,44 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
 
     @server.tool()
     def application_get(application: str, version: int | None = None) -> dict[str, Any]:
-        """Get immutable handler files/schema, review token and separate comparison/validation scope."""
+        """Get immutable handler files/schema, review token and confirmation and real validation scope."""
         return application_call(applications.get, application, version)
 
     @server.tool()
     def application_install(bundle_dir: str) -> dict[str, Any]:
-        """Statically install handler.py, manifest.json, original/ and cases.json. Executes no code.
+        """Statically install handler.py, manifest.json, original/. Executes no code.
 
         Agent migrates user scripts first, preserving their generation branches. Does not activate.
-        Original source is archived only. Compare references must come from reviewed original generation.
+        Original source is archived only. Request independent fresh-context review before user activation.
         """
         return application_call(applications.install, bundle_dir)
 
     @server.tool()
     def application_update(bundle_dir: str) -> dict[str, Any]:
-        """Install a new immutable version; check and user activation required; old tasks unchanged."""
+        """Install a new immutable version; code review and user activation required; old tasks unchanged."""
         return application_call(applications.install, bundle_dir)
 
     @server.tool()
-    def application_check(application: str, version: int, review_token: str,
-                          review_note: str) -> dict[str, Any]:
-        """After explicit code review, execute handler reference cases and compare script bytes.
+    def application_review_request(application: str, version: int, author_session: str) -> dict[str, Any]:
+        """Get frozen materials and checklist. Launch a fresh independent reviewer externally.
 
-        Local executable code is not a sandbox. Never run original submitters for reference fixtures.
-        Does not submit jobs. Mismatch fails closed, leaving version inactive.
+        Do not share adaptation conversation. No reviewer available means leave draft inactive.
         """
-        return application_call(applications.check, application, version, review_token, review_note)
+        return application_call(applications.review_request, application, version, author_session)
+
+    @server.tool()
+    def application_review_submit(application: str, version: int, review_token: str, report: dict) -> dict[str, Any]:
+        """Record the independent reviewer's report verbatim; never invent a passing report.
+
+        Revise means adapt, install a new immutable version and review again. Passing static
+        analysis permits user confirmation, not a claim of runtime output equivalence.
+        """
+        return application_call(applications.review_submit, application, version, review_token, report)
 
     @server.tool()
     def application_activate(application: str, version: int, review_token: str,
                              confirmation_note: str) -> dict[str, Any]:
-        """Activate checked exact version after user confirmation. Restart for tool/schema changes.
+        """Activate independently reviewed exact version after user confirmation. Restart for tool/schema changes.
 
         Do not invent confirmation. Does not submit or imply real application validation.
         """

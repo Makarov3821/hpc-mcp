@@ -11,16 +11,17 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 | application_list | 空安装返回空列表；列出 active／versions 与中断删除状态 |
 | application_get | application, version=null；返回完整 manifest、来源文件哈希、代码审阅和真实验证范围 |
 | application_install / application_update | bundle_dir；静态保存新 draft，不执行、不激活 |
-| application_check | application,version,review_token,review_note；代码审阅后执行 cases.json，生成脚本逐字节比对 |
-| application_activate | application,version,review_token,confirmation_note；用户确认 checked 版本，记录集群设置并激活 |
+| application_review_request | application,version,author_session；生成冻结材料与独立 reviewer 检查清单 |
+| application_review_submit | application,version,review_token,report；保存独立报告，revise 阻止激活，pass 进入用户确认 |
+| application_activate | application,version,review_token,confirmation_note；用户确认独立审阅通过的精确版本，记录集群设置并激活 |
 | application_prepare | application,cluster,input_path,project_root,parameters=null,version=null,compact=true；仅准备，未知应用返回 application_not_registered |
 | application_validate | run_id；读真实任务状态、稳定同步注册日志并核验哈希／显式标记，不提交 |
 | application_remove | application,dry_run=true；预览／完整删除，非终态任务引用阻止删除，不删计算数据 |
 | application_cleanup | older_than_seconds=86400,dry_run=true；清理暂存及无活动引用的非当前版本 |
 
-重启后从 manifest 注册 <application>_prepare 工具，参数 schema 可发现；当前连接中的专属工具固定启动时版本，通用分发使用当前应用／集群绑定版本。修改插件文件会拒绝调用，更新走新版本；已有任务与依赖派生固定原版本。所有基础管理步骤无需 LLM，agent 首次改造源码。参阅 [完整插件契约](APPLICATIONS.md)。
+重启后从 manifest 注册 <application>_prepare 工具，参数 schema 可发现；当前连接中的专属工具固定启动时版本，通用分发使用当前应用／集群绑定版本。修改插件文件会拒绝调用，更新走新版本；已有任务与依赖派生固定原版本。固定管理操作不调用 LLM；agent 首次改造源码并启动独立 reviewer，修改后重复审阅。参阅 [完整插件契约](APPLICATIONS.md)。
 
-CLI 对应 application-list/get/install/update/check/activate/prepare/validate/remove/cleanup。check／activate 的 --note 必填；remove／cleanup --apply 才删除。gaussian-prepare CLI 是注册 gaussian 的兼容调用名，不能传旧 spec／changes。旧 profile CLI 写入／执行明确报迁移错误；不自动迁移或重交历史任务。
+CLI 对应 application-list/get/install/update/review-request/review-submit/activate/prepare/validate/remove/cleanup。review-request 的 --author-session、review-submit 的 --report-file、activate 的 --note 必填；remove／cleanup --apply 才删除。gaussian-prepare CLI 是注册 gaussian 的兼容调用名，不能传旧 spec／changes。旧 profile CLI 写入／执行明确报迁移错误；不自动迁移或重交历史任务。
 
 ## 结构化脚本生成
 
