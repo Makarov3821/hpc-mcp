@@ -4,7 +4,7 @@ from .service import ClusterService
 from .jobs import JobService
 from .config import Cluster, ConfigManager
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 from .scripts import Resources, script_generate as generate_script
 from .templates import TemplateService
 from .updates import UpdateService
@@ -32,11 +32,11 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "Agent migrates source into a standard handler bundle once; application_install only performs static checks. "
         "Use setup_flow_create(kind=application_adaptation) for adaptation staging. Use the returned workspace, not an agent-chosen temporary "
         "directory. Keep handler bundles and review JSON there; close with persisted artifact references and "
-        "preview/apply setup_flow_cleanup after installation and report persistence. Never write learning "
+        "advance through setup_flow_step and user-approved setup_flow_confirm, then preview/apply setup_flow_cleanup. Never write learning "
         "artifacts in the user working/project directory or checkout. Do not create GAUSSIAN.md or similar "
         "application summaries by default; Markdown is not executable configuration and is never read for dispatch. "
         "Request an independent fresh-context reviewer for original code and handler changes. Record its report verbatim; revise and install a new version until review passes before user confirmation. "
-        "User confirmation via application_activate is separate from real compute-node validation. "
+        "User confirmation through setup_flow_confirm (or legacy unmanaged application_activate) is separate from real compute-node validation. "
         "Use registered application handlers for daily prepare; job_submit is separate. Never execute original submission wrappers. "
         "Preview application_remove before deleting; preserve user computation data and history."))
     templates = TemplateService(jobs)
@@ -57,14 +57,17 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         except (ValueError, OSError) as exc:
             return {'ok': False, 'error': 'application_invalid_request' if isinstance(exc, ValueError) else 'application_io_error', 'message': str(exc)}
 
-    from .setup_flows import SetupFlowService, SetupFlowError
-    setup_flows = SetupFlowService(jobs)
+    from .setup_flows import SetupFlowError
+    from .setup_workflows import SetupWorkflowService
+    setup_flows = SetupWorkflowService(jobs, service, config)
 
     def setup_call(method, *args):
         try:
             return method(*args)
         except SetupFlowError as exc:
             return {'ok': False, 'error': exc.code, 'message': str(exc)}
+        except ApplicationError as exc:
+            return {'ok': False, 'error': exc.code, 'message': str(exc), **exc.details}
         except (ValueError, OSError) as exc:
             return {'ok': False, 'error': 'setup_flow_invalid_request' if isinstance(exc, ValueError) else 'setup_flow_io_error', 'message': str(exc)}
 
@@ -78,8 +81,34 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return setup_call(setup_flows.create, kind, request_key, label)
 
     @server.tool()
+    def setup_flow_step(flow_id: str, expected_revision: int, action: Literal['cluster_inputs', 'cluster_probe', 'application_source', 'application_install',
+                          'application_review_request', 'application_review_submit', 'reset_failed_step'],
+                        payload: dict) -> dict[str, Any]:
+        """Advance a legal setup step and persist intent before side effects.
+
+        Actions: cluster_inputs, cluster_probe, application_source, application_install,
+        application_review_request, application_review_submit, reset_failed_step.
+        Payloads: cluster_inputs={cluster,settings,probe_options?}; cluster_probe={};
+        application_source={application,source_paths}; application_install={bundle_dir};
+        application_review_request={author_session}; application_review_submit={report};
+        reset_failed_step={}. No original scripts are executed. Revise requires
+        a new immutable version. Independent reviewer is launched externally with fresh context.
+        """
+        return setup_call(setup_flows.step, flow_id, expected_revision, action, payload)
+
+    @server.tool()
+    def setup_flow_confirm(flow_id: str, expected_revision: int, confirmation_token: str,
+                           confirmation_note: str) -> dict[str, Any]:
+        """After user confirmation of the exact displayed plan, save cluster or activate application.
+
+        Rechecks probe freshness, configuration baseline, version and independent report.
+        Does not submit compute jobs or prove runtime application correctness. Never invent confirmation.
+        """
+        return setup_call(setup_flows.confirm, flow_id, expected_revision, confirmation_token, confirmation_note)
+
+    @server.tool()
     def setup_flow_get(flow_id: str) -> dict[str, Any]:
-        """Read durable setup state, revision, artifacts and pending action."""
+        """Read setup state, revision, artifacts and pending action; check confirmation freshness locally."""
         return setup_call(setup_flows.get, flow_id)
 
     @server.tool()
@@ -94,7 +123,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
 
     @server.tool()
     def setup_flow_resume(flow_id: str) -> dict[str, Any]:
-        """Recover allocating/closing/previously authorized cleaning. Does not advance business steps."""
+        """Recover recorded business intent and allocating/closing/previously authorized cleaning. No new authorization."""
         return setup_call(setup_flows.resume, flow_id)
 
     @server.tool()
@@ -102,7 +131,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                          artifacts: list[dict] | None = None) -> dict[str, Any]:
         """Close as completed with persisted report/application references, or explicitly abandoned.
 
-        Base record closure is not proof of configured cluster or activated application.
+        Managed business flows complete through setup_flow_confirm, not manual completed closure.
         Abandon does not cancel tasks/uninstall applications. Open flows cannot be cleaned.
         """
         return setup_call(setup_flows.close, flow_id, expected_revision, outcome, artifacts)
@@ -129,7 +158,8 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     def application_install(bundle_dir: str) -> dict[str, Any]:
         """Statically install handler.py, manifest.json, original/. Executes no code.
 
-        Agent migrates user scripts first, preserving their generation branches. Does not activate.
+        For new adaptation use setup_flow_step(application_install). This standalone compatibility
+        entry rejects managed workspace bundles; it does not activate.
         Original source is archived only. Request independent fresh-context review before user activation.
         """
         return application_call(applications.install, bundle_dir)
@@ -161,6 +191,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                              confirmation_note: str) -> dict[str, Any]:
         """Activate independently reviewed exact version after user confirmation. Restart for tool/schema changes.
 
+        Managed versions require setup_flow_confirm; this is a standalone compatibility entry.
         Do not invent confirmation. Does not submit or imply real application validation.
         """
         return application_call(applications.activate, application, version, review_token, confirmation_note)
@@ -430,7 +461,10 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     "compact_responses": True,
                     "applications_root": str(applications.root), "application_interface_version": 1,
                     "setup_flows_root": str(setup_flows.root), "workspace_allocation": "setup_flow_create",
-                    "workspace_cleanup": "setup_flow_close then setup_flow_cleanup preview/apply",
+                    "workspace_cleanup": "setup_flow_confirm or abandon, then setup_flow_cleanup preview/apply",
+                    "setup_business_steps": {"cluster_setup": ["cluster_inputs", "cluster_probe", "confirm"],
+                        "application_adaptation": ["application_source", "application_install", "application_review_request", "application_review_submit", "confirm"]},
+                    "max_probe_age_seconds": {"default": 3600, "minimum": 30, "maximum": 86400},
                     "application_tool_refresh": "restart", "legacy_profiles": "migration/read only"},
                 "workflow": {"limits": asdict(WorkflowLimits()), "enabled_by_default": False,
                     "conditions": ["scheduler_succeeded", "application_succeeded", "files_ready"],

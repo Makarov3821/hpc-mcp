@@ -199,11 +199,36 @@ class ApplicationService:
             raise ValueError('manifest checksum mismatch')
         return record, path
 
-    def install(self, bundle_dir):
+    def _setup_guard(self, record, action, flow_id):
+        origin = record.get('setup_origin')
+        if not origin:
+            return
+        if flow_id != origin['flow_id']:
+            raise ApplicationError('application_setup_flow_required', 'This version is managed by a setup flow; use setup_flow_step/confirm.')
+        with self.jobs.history.connect() as db:
+            row = db.execute('SELECT data FROM setup_flows WHERE id=?', (flow_id,)).fetchone()
+        value = json.loads(row[0]) if row else {}
+        business = value.get('business', {})
+        if (value.get('state') != 'open' or business.get('application') != record['application']
+                or business.get('version') != record['version']
+                or business.get('operation', {}).get('action') != action):
+            raise ApplicationError('application_setup_flow_required', 'Exact flow step and version required.')
+
+    def install(self, bundle_dir, _setup_origin=None):
         supplied = Path(bundle_dir).expanduser()
         if supplied.is_symlink() or not supplied.is_dir():
             raise ValueError('bundle must be a regular directory')
         source = supplied.resolve()
+        onboarding_root = self.jobs.history.root / 'onboarding'
+        if source.is_relative_to(onboarding_root):
+            parts = source.relative_to(onboarding_root).parts
+            if parts:
+                with self.jobs.history.connect() as db:
+                    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_flows'").fetchone()
+                    row = db.execute('SELECT data FROM setup_flows WHERE id=?', (parts[0],)).fetchone() if exists else None
+                flow = json.loads(row[0]) if row else {}
+                if flow.get('business') and (_setup_origin is None or _setup_origin['flow_id'] != parts[0]):
+                    raise ApplicationError('application_setup_flow_required', 'Install managed workspace bundles through setup_flow_step.')
         files = file_manifest(source)
         if sum(f['size'] for f in files) > 2097152 or len(files) > 128:
             raise ValueError('plugin bundle exceeds 2 MiB / 128 files')
@@ -231,6 +256,7 @@ class ApplicationService:
                     'manifest': manifest, 'manifest_sha256': digest(manifest), 'files': files,
                     'validation': {'status': 'unverified'}}
                 record['review_token'] = digest(record)
+                if _setup_origin is not None: record['setup_origin'] = _setup_origin
                 self.atomic(staged / 'record.json', record)
                 os.replace(staged, versions / str(version))
             entry = index.setdefault(app, {'active': None, 'versions': []})
@@ -309,12 +335,13 @@ class ApplicationService:
                 raise ValueError('invalid generated script')
             return result, request['parameters']
 
-    def review_request(self, application, version, author_session):
+    def review_request(self, application, version, author_session, _setup_flow_id=None):
         """Return frozen source material and instructions for an external fresh reviewer."""
         if not isinstance(author_session, str) or not author_session.strip() or len(author_session) > 256:
             raise ValueError('author_session must identify the adapting agent session')
         with self.locked():
             record, path = self.record(application, version)
+            self._setup_guard(record, 'application_review_request', _setup_flow_id)
             packet = {'application': application, 'version': version,
                 'review_token': record['review_token'], 'author_session': author_session,
                 'files': record['files'], 'bundle_dir': str(path),
@@ -343,10 +370,11 @@ class ApplicationService:
             self.atomic(path / 'record.json', record)
             return {'ok': True, 'review_request': packet}
 
-    def review_submit(self, application, version, review_token, report):
+    def review_submit(self, application, version, review_token, report, _setup_flow_id=None, _setup_operation_id=None):
         """Record an externally produced independent review against the exact bundle."""
         with self.locked():
             record, path = self.record(application, version)
+            self._setup_guard(record, 'application_review_submit', _setup_flow_id)
             packet = record.get('review_request')
             if record['review_token'] != review_token or not packet or packet['review_token'] != review_token:
                 raise ValueError('request review for the exact version first')
@@ -373,6 +401,7 @@ class ApplicationService:
                 raise ValueError('revise requires actionable differences or unresolved behavior')
             evidence = {'review_token': review_token, 'submitted_at': now(), 'report': report,
                 'scope': 'external_fresh_context_static_review', 'provenance': 'client_attested'}
+            if _setup_operation_id is not None: evidence['setup_operation_id'] = _setup_operation_id
             record.setdefault('reviews', []).append(evidence)
             record['review'] = evidence
             record['status'] = 'review_passed' if report['verdict'] == 'pass' else 'review_rejected'
@@ -380,11 +409,12 @@ class ApplicationService:
             self.event('application_reviewed', {'application': application, 'version': version, 'verdict': report['verdict']})
             return {'ok': True, 'application': record, 'next_step': 'user_confirmation' if report['verdict'] == 'pass' else 'revise_install_new_version_and_review'}
 
-    def activate(self, application, version, review_token, confirmation_note):
+    def activate(self, application, version, review_token, confirmation_note, _setup_flow_id=None, _setup_expected_clusters=None):
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
             raise ValueError('user confirmation note required')
         with self.locked():
             record, path = self.record(application, version)
+            self._setup_guard(record, 'confirm', _setup_flow_id)
             if (record['review_token'] != review_token or record['status'] not in ('review_passed', 'active')
                     or record.get('review', {}).get('review_token') != review_token
                     or record.get('review', {}).get('report', {}).get('verdict') != 'pass'):
@@ -394,6 +424,8 @@ class ApplicationService:
                 if cluster not in self.jobs.clusters or self.jobs.clusters[cluster].scheduler != record['manifest']['scheduler']:
                     raise ValueError('configure each declared cluster with matching scheduler before activation')
                 settings[cluster] = digest(asdict(self.jobs.clusters[cluster]))
+            if _setup_expected_clusters is not None and settings != _setup_expected_clusters:
+                raise ApplicationError('application_cluster_changed', 'Cluster changed during setup confirmation; review current settings.')
             record.update(status='active', confirmation_note=confirmation_note, confirmed_at=now(), cluster_settings=settings)
             self.atomic(path / 'record.json', record)
             index = self.read_index(); index[application]['active'] = version
@@ -445,6 +477,16 @@ class ApplicationService:
                 if plugin.get('application') == application and (version is None or plugin.get('version') == version):
                     if run.get('state') not in ('succeeded', 'failed', 'cancelled'):
                         blockers.append(rid)
+        with self.jobs.history.connect() as db:
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_flows'").fetchone()
+            if exists:
+                for flow_id, encoded in db.execute('SELECT id,data FROM setup_flows'):
+                    flow = json.loads(encoded); business = flow.get('business', {})
+                    if flow['state'] in ('completed', 'abandoned', 'cleaned') or business.get('application') != application:
+                        continue
+                    installing = business.get('operation', {}).get('action') == 'application_install'
+                    if version is None or business.get('version') == version or installing:
+                        blockers.append('setup_flow:' + flow_id)
         return blockers
 
     def remove(self, application, dry_run=True):

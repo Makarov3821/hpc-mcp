@@ -24,3 +24,7 @@
 ## 独立审阅验收
 
 确认工具中不再有 application_check，最小包不需要参考案例。未审阅时激活必须失败；review_request 只提供冻结文件和接口要求，reviewer 不读取改造对话。分别测试 revise、缺项、同会话、非 fresh、pass 带差异／未知项、新版本使用旧 token，均不得激活。按意见安装新版本并重新独立审阅通过后，才请求用户确认。协议测试中的报告是测试夹具，不是真实 LLM 审阅证明。实际客户端必须验证 reviewer 确实在独立上下文中运行。
+
+## Phase 9B 业务门禁
+
+新应用使用 setup_flow_step 的 source/install/review_request/review_submit 和 setup_flow_confirm；原脚本归档后不可替换，revise 必须安装新版本。验证普通受管安装／审阅／激活被拒绝、活动流程引用阻止卸载、过期探测和变化配置阻止确认。中断安装／报告提交后恢复不得产生重复版本或报告。实际客户端独立 reviewer 与计算节点验证仍需真机检查。

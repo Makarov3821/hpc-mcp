@@ -98,7 +98,7 @@ class ConfigManager:
         settings.pop("name")
         return settings
 
-    def set(self, name: str, settings: dict) -> dict:
+    def set(self, name: str, settings: dict, expected_current_digest=..., desired_digest=None) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             raise ValueError("cluster name must contain letters, digits, '.', '_' or '-'")
         if not isinstance(settings, dict) or "name" in settings:
@@ -107,6 +107,14 @@ class ConfigManager:
         with self.path.with_suffix(self.path.suffix + ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             current = load_config(self.path) if self.path.exists() else {}
+            if expected_current_digest is not ...:
+                from .onboarding_store import digest
+                actual = digest(asdict(current[name])) if name in current else None
+                if desired_digest is not None and actual == desired_digest:
+                    self.clusters.clear(); self.clusters.update(current)
+                    return self.get(name)
+                if actual != expected_current_digest:
+                    raise ValueError('cluster configuration changed since confirmed preview')
             values = asdict(current[name]) if name in current else {}
             values.pop("name", None)
             values.update(settings)

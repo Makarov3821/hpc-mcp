@@ -96,8 +96,8 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 
 新安装的 MCP 保留集群与任务基础工具，**没有内置 Gaussian／VASP 执行方法**。先完成连接设置，再由用户提供脚本注册应用。`serve` 可在配置文件尚不存在时启动空服务。
 
-1. `cluster_probe(ssh_host)` 保存 SSH 身份、调度器、队列与工作目录证据；软件发现最多一次有界 module avail，不扫盘。候选或路径不明确时请求用户补充。
-2. 用 `cluster_configure`／`config-set` 保存连接；常用队列、核数、初始化与程序路径以用户脚本为准，不推断默认执行方式。
+1. 创建 cluster_setup 流程，提供 SSH alias 和已有设置；流程中的 cluster_probe 保存身份、调度器、队列与目录证据。软件发现最多有界 module avail，不扫盘；缺失信息由用户补充。
+2. 新接入使用 setup_flow_create(kind="cluster_setup") → setup_flow_step(cluster_inputs/cluster_probe) → 展示计划 → 用户确认 setup_flow_confirm；常用队列、核数和软件环境从用户脚本进入应用配置，不推断执行方式。独立 cluster_configure/config-set 保留为显式手动设置入口。
 3. 用户提供提交脚本或 qg16／qvasp 源码，进入下面的标准应用注册流程。登录检查不表示计算节点软件已验证。
 
 ### 用户脚本 → 应用插件 → 固定执行
@@ -106,40 +106,34 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 
 标准包包含 handler.py、manifest.json 和 original/ 原脚本。详细契约、请求／响应、错误与清理边界见 [应用插件指南](docs/APPLICATIONS.md)。插件位于 `state-dir/applications/应用/versions/版本/`，不写源码安装目录或用户项目。
 
-适配时先调用 `setup_flow_create(kind="application_adaptation", request_key="本次唯一意图")`，把改造包、审阅 JSON 和辅助文件写入返回的绝对 workspace，不在工作目录、用户项目或 repo 写学习资料。默认不生成 GAUSSIAN.md：运行行为由 handler 与 manifest 决定。安装并保存报告后，调用 setup_flow_close 引用持久化应用版本，再通过 setup_flow_cleanup 预览／应用清理，保留流程历史。中断用 setup_flow_get/resume 恢复；开放流程禁止清理。接口与状态说明见 [流程工作区指南](docs/SETUP_FLOWS.md)。完整接入与适配步骤门禁将由 Phase 9B 接入，当前工具负责记录与目录生命周期。
+新适配使用 `setup_flow_create(kind="application_adaptation", request_key="本次唯一意图")`，由 setup_flow_step 完成原脚本存档、安装与独立审阅循环。只在返回的 workspace 写 bundle 和报告，不在工作目录／项目／repo 写学习资料，默认不生成 GAUSSIAN.md。审阅通过后，用 setup_flow_confirm 确认精确计划并激活；不能手动关闭为 completed 或从普通激活工具绕过。完成或显式放弃后，再 setup_flow_cleanup 预览／清理，保留历史。详见 [流程指南与动作参数](docs/SETUP_FLOWS.md)。
 
-1. `application_install(bundle_dir)` 静态保存 draft，返回版本与 review_token，不执行代码。
-2. 调用 `application_review_request(application, version, author_session)`，agent 启动一个全新上下文的独立 reviewer，只提供原脚本、handler、manifest 和接口约束，不传改造对话或作者结论。reviewer 分析所有条件分支、默认值及生成结果差异，返回结构化报告。
-3. 用 `application_review_submit(..., report)` 原样提交报告；revise 时根据意见修改、安装新版本并重新独立审阅。不存在未批准差异或未决项才能 pass；没有独立 reviewer 能力时保持草稿，不模拟报告。
-4. 独立审阅通过后，用户核对后 `application_activate(..., confirmation_note)` 激活。重启 MCP 可发现 gaussian_prepare／vasp_prepare 等工具及声明参数；稳定 application_prepare 可以立即使用。
-5. `application_prepare(application, cluster, input_path, project_root, parameters)` 准备独立 run，再按用户意图调用 job_submit。输入卡由 agent 预先规范，不暗中改写。
-6. 授权一个实际小任务，完成后 `application_validate(run_id)` 核对注册判据与日志哈希。确认激活不等于真实验证通过；未配置判据返回 unverified。
+1. setup_flow_step(application_source) 保存用户给出的原脚本与哈希；agent 在 workspace/bundle 编写 handler、manifest 和匹配的 original/。
+2. setup_flow_step(application_install) 安装新草稿版本并绑定来源、集群与流程。
+3. setup_flow_step(application_review_request) 返回固定材料；agent 启动全新上下文 reviewer，不共享改造对话或作者结论。
+4. setup_flow_step(application_review_submit) 原样保存报告；revise 时按意见修订、安装新版本再审阅。没有独立 reviewer 能力时等待，不能模拟报告。
+5. pass 后展示 confirmation_plan，用户核对，再 setup_flow_confirm 激活。配置／报告变化或旧 token 不能授权；重启 MCP 刷新应用工具。
+6. 日常 application_prepare 准备独立 run，再按用户意图 job_submit；真实小任务完成后 application_validate 核对明确判据。激活不等于真实验证通过。
 
 未注册软件返回 application_not_registered，并请求用户提供模板。不会猜测软件路径、MPI 环境或 Slurm 转换；未迁移的 packing／批量扫描明确排除，多任务用多个独立 run 与 workflow 管理。
 
 [Gaussian](examples/applications/gaussian/) 与 [VASP](examples/applications/vasp/) 是仓库原脚本的迁移样例，**不会自动安装**。先复制到 agent 数据目录，按用户脚本修改 manifest 中 clusters、队列和路径，再独立审阅、用户确认。还有普通 [LSF](examples/applications/hello_lsf/)／[Slurm](examples/applications/hello_slurm/) 模板样例。
 
 ```bash
-# 先创建流程，BUNDLE 位于返回的 WORKSPACE/bundle 中。
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --state-dir /ABS/HPC_MCP/state \
-  setup-flow-create application_adaptation --request-key gaussian-lab-001 --label gaussian
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-install /ABS/BUNDLE
-# 阅读代码后，使用上一步返回的精确版本与 token；note 记录实际审阅。
+  --state-dir /ABS/HPC_MCP/state setup-flow-create application_adaptation \
+  --request-key gaussian-lab-001 --label gaussian
+# 使用返回的 workspace 和最新 revision；source-request.json 指定原脚本路径。
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-review-request gaussian 1 --author-session AUTHOR_SESSION
-# 将返回材料交给独立 reviewer，报告也保存在本次数据目录暂存中
+  --state-dir /ABS/HPC_MCP/state setup-flow-step FLOW_ID --revision REVISION \
+  --action application_source --payload-file /ABS/WORKSPACE/source-request.json
+# 后续安装与审阅按流程指南执行；通过且用户确认后：
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-review-submit gaussian 1 REVIEW_TOKEN \
-  --report-file /ABS/WORKSPACE/review.json
-# 用户确认后才执行：
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-activate gaussian 1 REVIEW_TOKEN --note '用户确认了该版本与适用集群'
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state application-prepare gaussian lab /ABS/A/B/test1.gjf --project-root /ABS/A
+  --state-dir /ABS/HPC_MCP/state setup-flow-confirm FLOW_ID CONFIRMATION_TOKEN \
+  --revision REVISION --note '用户确认了精确版本与适用集群'
 ```
 
-更新走 application_update → 独立 review → 用户确认 activate，已有任务绑定旧版。删除先 application_remove 预览，再用 dry_run=false（CLI --apply）执行；未提交／活动任务先处理，输入／输出／任务历史与共享 Python 依赖保留。安装失败暂存和无引用旧版本可用 application_cleanup 清理，默认只预览。
+更新使用新的 application_adaptation 流程：存档来源 → 安装修订版本 → 独立 review → 用户确认，已有任务绑定旧版。删除先 application_remove 预览，再用 dry_run=false（CLI --apply）执行；未提交／活动任务先处理，输入／输出／任务历史与共享 Python 依赖保留。安装失败暂存和无引用旧版本可用 application_cleanup 清理，默认只预览。
 
 CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）：
 
@@ -150,7 +144,7 @@ CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）�
 
 探测、脚本报告和任务历史保存在同一 agent 状态目录；应用插件与注册证据按版本保存。旧 profile_get/list 仅用于迁移时读取。应用插件样例中的路径、队列和资源必须按用户脚本调整。验证只覆盖记录的具体版本、参数和布局；改变参数不继承验证，集群设置变化会拒绝准备，须显式审阅并重新激活／验证。远程软件内容变化无法通过本地读取自动发现，站点变更后应显式重新验证。
 
-已有 `clusters.toml` 时先读取。新增或更新配置可以使用 CLI 的 JSON 设置接口：
+已有 `clusters.toml` 时先读取。下面是用户明确要求直接手动设置时的兼容 CLI；新接入优先使用 setup_flow，不用这些命令跳过受管确认：
 
 ```bash
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --state-dir /ABS/HPC_MCP/state --config /ABS/HPC_MCP/clusters.toml config-set lab \

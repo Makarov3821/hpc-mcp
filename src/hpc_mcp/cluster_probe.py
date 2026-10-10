@@ -84,7 +84,7 @@ class ClusterProbe:
         response['scheduler'] = selected
         response['needs'] = []
         response['next_steps'] = ['Provide an application script or explicit settings.',
-            'Confirm queue/resources/environment/output rules, save a profile, then authorize a short compute probe.']
+            'Confirm queue/resources/environment/output rules through setup_flow and register a reviewed application, then authorize a short compute probe.']
         if selected is None:
             response['needs'].append('scheduler_selection')
         if not work_root:

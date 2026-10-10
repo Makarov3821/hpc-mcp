@@ -41,6 +41,8 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('workflow_plan',tools)
                         self.assertIn('setup_flow_create',tools)
                         self.assertIn('setup_flow_cleanup',tools)
+                        self.assertIn('setup_flow_step',tools)
+                        self.assertIn('setup_flow_confirm',tools)
                         self.assertEqual((await call(client,'application_list'))['applications'],[])
                         missing=await call(client,'application_prepare',{'application':'gaussian','cluster':'lab','input_path':str(project/'water.gjf'),'project_root':str(project)})
                         self.assertEqual(missing['error'],'application_not_registered')
@@ -49,19 +51,26 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         workspace=Path(flow['workspace']);self.assertTrue(workspace.is_relative_to(state/'onboarding'))
                         blocked_cleanup=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'dry_run':False})
                         self.assertEqual(blocked_cleanup['error'],'setup_flow_in_use')
+                        flow=(await call(client,'setup_flow_step',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'action':'application_source',
+                            'payload':{'application':'gaussian','source_paths':[str(ROOT/'examples/applications/gaussian/original/qg16')]}}))['flow']
                         shutil.copytree(ROOT/'examples/applications/gaussian',workspace/'bundle')
-                        installed=await call(client,'application_install',{'bundle_dir':str(workspace/'bundle')})
-                        record=installed['application']; token=record['review_token']
+                        blocked_install=await call(client,'application_install',{'bundle_dir':str(workspace/'bundle')})
+                        self.assertEqual(blocked_install['error'],'application_setup_flow_required')
+                        flow=(await call(client,'setup_flow_step',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'action':'application_install','payload':{'bundle_dir':str(workspace/'bundle')}}))['flow']
+                        token=flow['business']['review_token']
                         blocked=await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'Confirmed but not reviewed.'})
                         self.assertFalse(blocked['ok'])
-                        packet=(await call(client,'application_review_request',{'application':'gaussian','version':1,'author_session':'test-author'}))['review_request']
+                        flow=(await call(client,'setup_flow_step',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'action':'application_review_request','payload':{'author_session':'test-author'}}))['flow']
+                        packet=flow['business']['review_request']
                         report={'reviewer_session':'test-independent-reviewer','fresh_context':True,'verdict':'pass',
                                 'checks':{k:'Synthetic test evidence.' for k in packet['required_checks']},
                                 'differences':[],'unresolved':[],'allowed_changes':[]}
-                        await call(client,'application_review_submit',{'application':'gaussian','version':1,'review_token':token,'report':report})
-                        await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'User confirmed exact generator and supported scope.'})
-                        closed=(await call(client,'setup_flow_close',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'outcome':'completed',
-                            'artifacts':[{'kind':'application_version','application':'gaussian','version':1}]}))['flow']
+                        flow=(await call(client,'setup_flow_step',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],'action':'application_review_submit','payload':{'report':report}}))['flow']
+                        bypass=await call(client,'application_activate',{'application':'gaussian','version':1,'review_token':token,'confirmation_note':'confirmed'})
+                        self.assertEqual(bypass['error'],'application_setup_flow_required')
+                        closed=(await call(client,'setup_flow_confirm',{'flow_id':flow['flow_id'],'expected_revision':flow['revision'],
+                            'confirmation_token':flow['business']['confirmation_token'],'confirmation_note':'User confirmed exact generator and supported scope.'}))['flow']
+                        self.assertEqual(closed['state'],'completed')
                         preview=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':closed['revision']})
                         self.assertTrue(preview['dry_run']);self.assertTrue(workspace.exists())
                         cleaned=await call(client,'setup_flow_cleanup',{'flow_id':flow['flow_id'],'expected_revision':closed['revision'],'dry_run':False})

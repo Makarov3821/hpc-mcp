@@ -248,20 +248,30 @@ def main():
         if action == 'setup-flow-cleanup': ap.add_argument('--apply', action='store_true')
         if action == 'setup-flow-events':
             ap.add_argument('--limit', type=int, default=100); ap.add_argument('--after-id', type=int, default=0)
+    flow_step = sub.add_parser('setup-flow-step')
+    flow_step.add_argument('flow_id'); flow_step.add_argument('--revision', required=True, type=int)
+    flow_step.add_argument('--action', dest='flow_action', required=True); flow_step.add_argument('--payload-file', required=True)
+    flow_confirm = sub.add_parser('setup-flow-confirm')
+    flow_confirm.add_argument('flow_id'); flow_confirm.add_argument('confirmation_token')
+    flow_confirm.add_argument('--revision', required=True, type=int); flow_confirm.add_argument('--note', required=True)
     args, unknown = parser.parse_known_args()
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
         if args.action.startswith('setup-flow-'):
             from .jobs import JobService
-            from .setup_flows import SetupFlowService
-            flows = SetupFlowService(JobService({}, args.state_dir))
+            from .setup_workflows import SetupWorkflowService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            jobs = JobService(clusters, args.state_dir)
+            flows = SetupWorkflowService(jobs, ClusterService(clusters), ConfigManager(args.config, clusters))
             action = args.action.removeprefix('setup-flow-')
             if action == 'create': data = flows.create(args.kind, args.request_key, args.label)
             elif action == 'list': data = flows.list(args.limit, args.offset)
             elif action == 'get': data = flows.get(args.flow_id)
             elif action == 'resume': data = flows.resume(args.flow_id)
             elif action == 'events': data = flows.events(args.flow_id, args.limit, args.after_id)
+            elif action == 'step': data = flows.step(args.flow_id, args.revision, args.flow_action, json.loads(Path(args.payload_file).read_text()))
+            elif action == 'confirm': data = flows.confirm(args.flow_id, args.revision, args.confirmation_token, args.note)
             elif action == 'close': data = flows.close(args.flow_id, args.revision, args.outcome,
                 json.loads(Path(args.artifacts_file).read_text()) if args.artifacts_file else None)
             elif action == 'cleanup': data = flows.cleanup(args.flow_id, args.revision, not args.apply)

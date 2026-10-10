@@ -13,7 +13,7 @@ bundle/
 
 安装后位于 `applications/<application>/versions/<version>/`，增加受管理的 `record.json`，保存来源文件 SHA、状态、参数定义、独立审阅报告与真实验证证据。原脚本只存档，不由 MCP 执行。包最多 2 MiB、128 个普通文件，不接受符号链接或保留文件名。插件 ID 为小写字母开头，最多 48 个小写字母／数字／下划线；核心工具命名空间不可占用。
 
-agent 先调用 setup_flow_create 创建 application_adaptation 流程，仅在返回的绝对 workspace 内写 bundle 与审阅 JSON，不猜目录或使用当前工作目录、项目、checkout。默认不生成 GAUSSIAN.md，Markdown 不参与运行配置。安装和审阅报告持久化后，setup_flow_close 引用安装版本，再 setup_flow_cleanup 预览／应用清理暂存；失败或中断先 get/resume，开放流程不清理。旧 .install-draft-* 可继续通过 application_cleanup 清理；新的流程工作区只由 setup_flow_cleanup 管理。详见 [流程工作区](SETUP_FLOWS.md)。
+agent 先调用 setup_flow_create 创建 application_adaptation 流程，仅在返回的绝对 workspace 内写 bundle 与审阅 JSON，不猜目录或使用当前工作目录、项目、checkout。默认不生成 GAUSSIAN.md，Markdown 不参与运行配置。安装和审阅报告持久化后，setup_flow_confirm 激活并自动保存版本引用，再 setup_flow_cleanup 预览／应用清理暂存；失败或中断先 get/resume，开放流程不清理。旧 .install-draft-* 可继续通过 application_cleanup 清理；新的流程工作区只由 setup_flow_cleanup 管理。详见 [流程工作区](SETUP_FLOWS.md)。
 
 ## Manifest
 
@@ -38,6 +38,8 @@ MCP 使用当前 Python 的 `-I -B` 在独立子进程中执行已审阅 handler
 handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、不扫描提交其他任务或留下后台进程。用户选择一项输入／任务目录即生成独立 run；多项通过多个准备调用再交 workflow 管理，不 packing。输出大小预算覆盖 stdout/stderr；代码可信，不宣称限制任意本地副作用。
 
 ## 生命周期与独立审阅循环
+
+受管新适配首先使用 setup_flow_create／step／confirm，见 [业务流程](SETUP_FLOWS.md)。下面列出被流程调用的内部操作；带 setup_origin 的版本拒绝普通安装／审阅／激活入口绕过流程。没有进入流程的旧版独立调用保留兼容行为。
 
 1. `application_install(bundle_dir)`：静态安装 draft，执行无代码；返回 version 与 review_token。
 2. `application_review_request(application, version, author_session)`：生成绑定文件哈希和版本的审阅材料、固定提示和七项检查清单。
