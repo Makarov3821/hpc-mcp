@@ -1,0 +1,107 @@
+[
+  {
+    "request": {
+      "input_name": null,
+      "remote_dir": "/tmp/reference-run",
+      "input_path": "/tmp/reference",
+      "input_dir": "/tmp/reference",
+      "parameters": {
+        "queue": "xppn2",
+        "job_name": "vasp",
+        "nodes": 4,
+        "cores_per_node": 28,
+        "mpi_version": "2020",
+        "vasp_version": "621",
+        "program_type": "std",
+        "optcell": false,
+        "openmp": false,
+        "hdf5": false,
+        "bin_dir": "/apps/vasp/bin",
+        "input_files": [
+          "INCAR",
+          "POSCAR",
+          "POTCAR",
+          "KPOINTS"
+        ],
+        "outputs": [
+          "log.out",
+          "OUTCAR",
+          "CONTCAR",
+          "CHGCAR",
+          "WAVECAR"
+        ]
+      }
+    },
+    "expected_script": "references/0.lsf"
+  },
+  {
+    "request": {
+      "input_name": null,
+      "remote_dir": "/tmp/reference-run",
+      "input_path": "/tmp/reference",
+      "input_dir": "/tmp/reference",
+      "parameters": {
+        "queue": "xp40mc12",
+        "job_name": "vasp",
+        "nodes": 4,
+        "cores_per_node": 28,
+        "mpi_version": "2015",
+        "vasp_version": "544",
+        "program_type": "std",
+        "optcell": true,
+        "openmp": false,
+        "hdf5": false,
+        "bin_dir": "/apps/vasp/bin",
+        "input_files": [
+          "INCAR",
+          "POSCAR",
+          "POTCAR",
+          "KPOINTS"
+        ],
+        "outputs": [
+          "log.out",
+          "OUTCAR",
+          "CONTCAR",
+          "CHGCAR",
+          "WAVECAR"
+        ]
+      }
+    },
+    "expected_script": "references/1.lsf"
+  },
+  {
+    "request": {
+      "input_name": null,
+      "remote_dir": "/tmp/reference-run",
+      "input_path": "/tmp/reference",
+      "input_dir": "/tmp/reference",
+      "parameters": {
+        "queue": "xppn2",
+        "job_name": "vasp",
+        "nodes": 4,
+        "cores_per_node": 28,
+        "mpi_version": "2019",
+        "vasp_version": "621",
+        "program_type": "ncl",
+        "optcell": false,
+        "openmp": true,
+        "hdf5": true,
+        "bin_dir": "/apps/vasp/bin",
+        "input_files": [
+          "INCAR",
+          "POSCAR",
+          "POTCAR",
+          "KPOINTS"
+        ],
+        "outputs": [
+          "log.out",
+          "OUTCAR",
+          "CONTCAR",
+          "CHGCAR",
+          "WAVECAR"
+        ]
+      }
+    },
+    "expected_script": "references/2.lsf"
+  }
+]

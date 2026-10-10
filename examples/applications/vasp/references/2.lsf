@@ -1,0 +1,15 @@
+#BSUB -J vasp
+#BSUB -q xppn2
+#BSUB -R span[ptile=28]
+#BSUB -n 112
+#BSUB -o vasp-%J.out
+source /share/apps/Intel/intel2019u5/parallel_studio_xe_2019/psxevars.sh >/dev/null 2>&1
+MPI_HOME=/share/apps/Intel/intel2019u5/impi/2019.5.281/intel64/bin
+BIN_DIR=/apps/vasp/bin
+VASP_RUNDIR=`pwd`
+cd $VASP_RUNDIR
+ln -s $BIN_DIR/vdw_kernel.bindat $VASP_RUNDIR/vdw_kernel.bindat
+ln -s $BIN_DIR/vdw_kernel.bindat.big_endian $VASP_RUNDIR/vdw_kernel.big_endian
+
+export LD_LIBRARY_PATH=/apps/Tools/HDF5/hdf5-1.12.2/lib:$LD_LIBRARY_PATH
+mpirun -bootstrap lsf $BIN_DIR/vasp621_ncl_AVX512_mkl_openmp.hdf5 >log.out 2>&1 

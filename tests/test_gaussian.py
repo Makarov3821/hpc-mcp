@@ -158,9 +158,7 @@ class GaussianTests(unittest.TestCase):
         result = subprocess.run(command + ["gaussian-inspect", str(self.card)], capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)["analysis"]["cpus"], 2)
         result = subprocess.run(command + ["gaussian-prepare", "lab", str(self.card), str(spec_file),
-            "--project-root", str(self.fixture.root), "--output", "test.log", "--output", "test.chk",
-            "--changes", '{"cpus":2}'], capture_output=True, text=True, check=True)
-        run = json.loads(result.stdout)["run"]
-        self.assertEqual(run["phase"], "prepared")
-        self.assertEqual(run["application"]["kind"], "gaussian")
-        self.assertFalse(Path(run["remote_dir"]).exists())
+            "--project-root", str(self.fixture.root), "--output", "test.log"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('registered handler', json.loads(result.stdout)['error'])
+        self.assertFalse((self.fixture.root / 'submissions').exists())

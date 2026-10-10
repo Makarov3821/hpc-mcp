@@ -1,0 +1,13 @@
+{
+  "interface_version": 1,
+  "application": "hello_slurm",
+  "scheduler": "slurm",
+  "clusters": [
+    "lab"
+  ],
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

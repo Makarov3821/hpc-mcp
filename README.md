@@ -4,7 +4,7 @@
 
 这是供 Codex、OpenCode 等 agent 使用的本地 stdio MCP 服务。通过用户已有的 SSH 配置管理 LSF／Slurm 集群：环境检查、队列查询、普通批处理作业提交、历史、状态、日志、取消和结果同步。
 
-**Agent 按本指南完成安装、注册、集群引导和验收。** MCP 服务不调用模型 API，不需要 OpenAI API key。完整参数见 [接口参考](docs/REFERENCE.md)，目标集群验收见 [测试清单](docs/LIVE_TESTING.md)，功能路线见 [PLAN.md](PLAN.md)。
+**Agent 按本指南完成安装、注册、集群引导和验收。** MCP 服务不调用模型 API，不需要 OpenAI API key。完整参数见 [接口参考](docs/REFERENCE.md)，目标集群验收见 [测试清单](docs/PLUGIN_TESTING.md)，功能路线见 [PLAN.md](PLAN.md)。
 
 ## 1. 确定安装位置与前置条件
 
@@ -27,7 +27,8 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 ├── repo/                 # Git checkout；专用虚拟环境为 repo/.venv/
 ├── clusters.toml         # 集群连接配置
 └── state/                # 历史、输入快照、监控记录
-    └── profiles/*.json   # MCP 直接加载的应用执行配置
+    ├── applications/    # 注册 handler、manifest、来源与版本证据
+    └── profiles/*.json   # 旧配置，仅供迁移时读取
 
 <项目 A>/
 ├── B/test1.gjf           # 原始输入；输出按选择回到 B/
@@ -92,52 +93,43 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 
 ## 3. 配置集群
 
-新集群先完成以下闭环；仅有 SSH 别名即可开始，`serve` 可以在指定配置文件尚不存在时启动空服务：
+新安装的 MCP 保留集群与任务基础工具，**没有内置 Gaussian／VASP 执行方法**。先完成连接设置，再由用户提供脚本注册应用。`serve` 可在配置文件尚不存在时启动空服务。
 
-1. `cluster_probe(ssh_host)`：保存登录信息、调度器候选和队列信息。软件环境发现最多查询一次有大小限制的 `module avail`；不扫盘、不递归搜索、不加载模块。多个调度器或命令不可见时请用户选择／提供可信登录初始化文件。
-2. 用户提供常用脚本后调用 `script_inspect`，取得持久 `report_id`。Bash 支持静态指令和有序 source／export／module 设置；Python 提交器仅提取常量、参数声明、嵌入脚本及副作用证据，不导入或执行原程序。缺失、动态环境请用户补充；可用 `cluster_probe(paths=[明确绝对路径])` 检查具体路径，不扩展搜索。
-3. 用下述 `cluster_configure`／`config-set` 保存连接设置；再整理应用模板定义，通过 `profile_draft(name, cluster, application, definition, report_ids)` 保存待审版本。资源事实、用户默认值和本次任务参数分别解释；同一集群可保存 Gaussian、MPI、容器等不同运行配置。
-4. 向用户展示完整定义、有效默认资源、环境顺序、输入输出和未解析项。用户确认后，调用 `profile_confirm(profile_id, review_token, confirmation_note)`，记录确认并设置该集群／应用的默认配置。确认不表示计算节点验证通过。
-5. `profile_validate(profile_id, command=[用户确认的短验证命令], parameters=参数)` 只准备小作业，使用该配置的资源、环境和启动器；先展示渲染脚本及资源，用户授权后才调用 `job_submit`。随后用 `profile_validate(profile_id, run_id=编号)` 查询状态、回传有限大小的日志并记录验证证据。排队、失败或证据不足不会标为验证通过。
-6. 日常使用 `profile_plan(input_dir, cluster, application, parameters, project_root)` 准备独立任务，再用已有提交、状态与同步工具执行。默认配置固定模板版本和来源；单个任务覆盖只能使用声明参数。Gaussian 卡先用 `gaussian_inspect` 核对核数、内存和 checkpoint，需改写时仍用 Gaussian 专用辅助。
+1. `cluster_probe(ssh_host)` 保存 SSH 身份、调度器、队列与工作目录证据；软件发现最多一次有界 module avail，不扫盘。候选或路径不明确时请求用户补充。
+2. 用 `cluster_configure`／`config-set` 保存连接；常用队列、核数、初始化与程序路径以用户脚本为准，不推断默认执行方式。
+3. 用户提供提交脚本或 qg16／qvasp 源码，进入下面的标准应用注册流程。登录检查不表示计算节点软件已验证。
 
-### 学习脚本后保存为执行配置
+### 用户脚本 → 应用插件 → 固定执行
 
-用户让 agent “学习 qg16”或其他提交器时，完成标准是**规则已进入 MCP 的执行配置并设为默认**。一次静态分析之后，由 agent 将可用规则整理为 JSON：队列、调度资源、软件初始化、命令、输入输出规则与参数默认值。使用 profile_draft 保存并展示，用户确认后 profile_confirm(make_default=true) 激活。未知动态逻辑需明确补充，不执行原提交器，也不以生成 Markdown 代替配置。
+agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，写一个保持原格式的 Python 生成器；批处理器保留原生成函数与条件分支，只改参数／目录接口并拆除直接提交。handler 负责生成；MCP 接管独立任务快照、上传、提交、状态与输出归位。日常不重新解释源码，不在 MCP 内部调用 LLM。
 
-应用配置文件保存在 `state/profiles/<profile_id>.json`，草案／确认返回 configuration_file。SQLite 保存版本、来源、默认选择和历史关系，MCP 在准备任务时直接加载并校验 JSON；agent 不必每次重读 qg16、Markdown 或完整配置。profile_list 默认返回简短目录和参数声明，需要审阅时才调用 profile_get。
+标准包包含 handler.py、manifest.json、original/、cases.json 和原生成参考文件。详细契约、请求／响应、错误与清理边界见 [应用插件指南](docs/APPLICATIONS.md)。插件位于 `state-dir/applications/应用/versions/版本/`，不写源码安装目录或用户项目。
 
-学习 qg16 时，应用标识使用 `gaussian`，配置名称可以是 `qg16`。JSON 定义可从 [Gaussian 配置示例](examples/profiles/gaussian-lsf.json) 调整；`input`、`stem` 参数在后续调用中由 MCP 根据输入卡自动绑定。已有默认配置后，只需：
+1. `application_install(bundle_dir)` 静态保存 draft，返回版本与 review_token，不执行代码。
+2. agent 展示源码差异、参数默认值、条件分支和未迁移项。代码审阅后，`application_check(application, version, review_token, review_note)` 执行对照案例，提交脚本逐字节相同才通过；不要盲目执行原提交器的预览开关。
+3. 用户核对后 `application_activate(..., confirmation_note)` 激活。重启 MCP 可发现 gaussian_prepare／vasp_prepare 等工具及声明参数；稳定 application_prepare 可以立即使用。
+4. `application_prepare(application, cluster, input_path, project_root, parameters)` 准备独立 run，再按用户意图调用 job_submit。输入卡由 agent 预先规范，不暗中改写。
+5. 授权一个实际小任务，完成后 `application_validate(run_id)` 核对注册判据与日志哈希。确认激活不等于真实验证通过；未配置判据返回 unverified。
 
-```json
-{
-  "cluster": "lab",
-  "input_file": "/ABS/A/B/test1.gjf",
-  "project_root": "/ABS/A"
-}
-```
+未注册软件返回 application_not_registered，并请求用户提供模板。不会猜测软件路径、MPI 环境或 Slurm 转换；未迁移的 packing／批量扫描明确排除，多任务用多个独立 run 与 workflow 管理。
 
-将以上参数交给 gaussian_prepare：MCP 自动使用保存的资源、环境和输出规则，返回简短准备回执，job_submit 仍独立提交。CLI 对应：
+[Gaussian](examples/applications/gaussian/) 与 [VASP](examples/applications/vasp/) 是仓库原脚本的迁移样例，**不会自动安装**。先复制到 agent 数据目录，按用户脚本修改 manifest 中 clusters、队列和路径，再审阅、对照、确认。还有普通 [LSF](examples/applications/hello_lsf/)／[Slurm](examples/applications/hello_slurm/) 模板样例。
 
 ```bash
+# BUNDLE 为已由 agent 改造并整理到数据目录中的应用插件包。
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state gaussian-prepare lab /ABS/A/B/test1.gjf --project-root /ABS/A
+  --state-dir /ABS/HPC_MCP/state application-install /ABS/BUNDLE
+# 阅读代码后，使用上一步返回的精确版本与 token；note 记录实际审阅。
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state application-check gaussian 1 REVIEW_TOKEN --note '已审阅生成逻辑与对照来源'
+# 用户确认后才执行：
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state application-activate gaussian 1 REVIEW_TOKEN --note '用户确认了该版本与适用集群'
+/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
+  --state-dir /ABS/HPC_MCP/state application-prepare gaussian lab /ABS/A/B/test1.gjf --project-root /ABS/A
 ```
 
-输入卡由 agent 事先规范，默认不改写卡片。CPU／内存与执行资源矛盾时报告错误，不暗中补改。任务需要覆盖资源时只传声明的 parameters；明确传 spec 则使用本次完整配置，不能同时选择 profile_id／parameters。准备回执保留任务编号、配置版本、有效资源和输入差异；完整快照由 job_get 查看，或使用 compact=false（CLI --no-compact）。
-
-调整应用运行方式时，编辑 JSON **副本**，通过 profile_draft 或 CLI profile-draft 导入为新版本，核对后确认并设为默认；后续准备自动采用新版本，已准备任务保持原配置。不要直接修改已确认版本的 JSON：校验发现变化会拒绝使用，避免历史任务的规则被悄悄改写。集群连接设置仍由 clusters.toml／cluster_configure 管理。示例：
-
-```bash
-# CONFIG_COPY.json 是由 agent 在安装数据目录中整理的新版 JSON 定义。
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state profile-draft qg16 lab gaussian /ABS/CONFIG_COPY.json
-# 用户核对配置后：
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml \
-  --state-dir /ABS/HPC_MCP/state profile-confirm PROFILE_ID REVIEW_TOKEN --confirmation-note '用户确认了新版执行配置'
-```
-
-此流程复用机器配置，省去日常解释脚本和重复传输环境定义；工具调用与必要的任务回执仍有 token 开销。复杂条件生成、packing 等旧脚本行为不会因“学习”自动获得完整兼容。
+更新走 application_update → check → activate，已有任务绑定旧版。删除先 application_remove 预览，再用 dry_run=false（CLI --apply）执行；未提交／活动任务先处理，输入／输出／任务历史与共享 Python 依赖保留。安装失败暂存和无引用旧版本可用 application_cleanup 清理，默认只预览。
 
 CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）：
 
@@ -146,7 +138,7 @@ CLI 探测示例（`--queue-details` 可选择附加原始队列限制信息）�
   --state-dir /ABS/HPC_MCP/state cluster-probe YOUR_SSH_ALIAS
 ```
 
-探测、脚本报告、确认、模板和验证记录存入同一 agent 状态 SQLite，可通过 `onboarding_report`、`profile_get` 和 `profile_list` 在重启后读取。示例 [Gaussian LSF 配置](examples/profiles/gaussian-lsf.json) 的路径、队列和资源仅为占位示范，必须按用户脚本调整；LSF 内存预留作用范围仍需站点确认。验证仅覆盖具体命令、参数和资源布局；改变参数会在任务历史中标为未验证，修改集群设置需创建新配置版本。远程软件内容变化无法通过本地读取自动发现，站点变更后应显式重新验证。
+探测、脚本报告和任务历史保存在同一 agent 状态目录；应用插件与注册证据按版本保存。旧 profile_get/list 仅用于迁移时读取。应用插件样例中的路径、队列和资源必须按用户脚本调整。验证只覆盖记录的具体版本、参数和布局；改变参数不继承验证，集群设置变化会拒绝准备，须显式审阅并重新激活／验证。远程软件内容变化无法通过本地读取自动发现，站点变更后应显式重新验证。
 
 已有 `clusters.toml` 时先读取。新增或更新配置可以使用 CLI 的 JSON 设置接口：
 
@@ -222,7 +214,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 4. `job_sync`：取回结果，查看 `output_dir`、`output_manifest`、`sync_options` 和 `final`。
 5. 重启 MCP 后用 `job_list`／`job_get` 验证同一状态目录下的历史仍可读。
 
-新作业默认同步执行目录中的全部普通文件（也包含上传的输入）；内部回执、符号链接不下载。已有作业保留旧的过滤设置。Agent 可以在每次同步时覆盖选择：
+应用插件任务按 handler 返回的明确 outputs 同步；低层 job_prepare 未指定规则时仍可采用全文件模式。内部回执、符号链接不下载。已有作业保留旧的过滤设置。Agent 可以在每次同步时覆盖选择：
 
 ```json
 {
@@ -276,7 +268,9 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 清理与提交／同步共用作业锁，仅处理该作业的同步暂存；不会删除输入快照、历史、已回传文件或远程数据。需要定时时，由 agent 按用户要求配置系统定时器重复执行指定作业的清理命令；默认不启动后台协调器；需要服务内自动保留策略时显式使用下节 monitor 工具。相同选择规则、目标和远程文件指纹下，失败下载可复用暂存续传；规则或文件变化时创建新尝试。
 
-## 6. 生成单任务脚本与复用模板
+## 6. 低层脚本与任务管理
+
+下面的通用生成工具只用于用户明确指定的脚本／资源，不能作为未注册软件的自动执行回退。日常应用任务优先使用已注册 handler。
 
 `script_generate(scheduler, spec)` 只返回可审查的 Bash 脚本。`spec.command` 是程序和参数组成的列表，可指定 `stdin`／`stdout`／`stderr` 相对路径、`environment` 和计算节点使用的远程绝对 `init_scripts`。`resources` 支持队列／分区、CPU、内存和时间；完整字段见 [接口参考](docs/REFERENCE.md)。默认生成单任务共享内存脚本，也支持显式 MPI 布局、GPU 和容器；每个计划仍对应一个独立调度作业。
 
@@ -334,28 +328,17 @@ Gaussian 示例不解析或修改输入卡。agent 应核对实际 `%chk`、`%np
   script-generate slurm /ABS/HPC_MCP/repo/examples/resources/mpi-slurm.json
 ```
 
-分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后可纳入 profile_draft，或直接导入独立模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，`used-scripts/` 的三个提交器已有只读分析测试，完整兼容适配仍待开发。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
+分析不会执行源码，返回 SHA、行号和未解析项，并保存可追溯的 report_id。Bash 的 template_draft 只是待审草案；agent 核对后用于编写应用 handler，或在用户明确要求时导入独立低层模板。变量、分支、多个命令和 Python 入口不自动转换；Python AST 已支持候选常量、参数声明、嵌入配置及副作用提取，`used-scripts/` 的三个提交器已有只读分析测试，应用 handler 迁移样例与原生成对照见 examples/applications 和插件指南。原始批处理脚本可继续用 job_prepare 保存原文，Python 提交器不能直接作为批处理脚本提交。
 
 MPI 使用 tasks（进程数）、cpus（每进程 CPU）、nodes／tasks_per_node 和 launcher；OpenMP 线程在 environment 明确设置。Slurm 可指定精确均匀节点布局；LSF 按总 slots 和每 host 的 ptile 表达，不声称精确多节点数。GPU 使用 scheduler 专用 slurm_gres／slurm_gpus_per_task／lsf_gpu，容器支持可信远程 Apptainer／Singularity 镜像、显式挂载和单节点 scratch。镜像及软件不随任务上传；scratch 不改变输出 cwd，不自动回传中间文件。
 
 [资源示例](examples/resources/) 中的远程路径、GPU 型号、启动器参数都是占位，agent 应先取得用户的站点设置，核对生成脚本与输入清单再准备／提交；MPI 主机发现、CPU binding、容器 ABI 和共享存储需要目标环境验证。参数和兼容限制见 [接口参考](docs/REFERENCE.md)。
 
-### Gaussian 单任务与应用结果
+### Gaussian 输入与应用结果分析
 
-agent 先调用 `gaussian_inspect(input_file)`，读取 Link0、Link1、CPU／内存、checkpoint 引用和候选输出。报告保留行号及未解析项；不扫描或提交其他卡，不猜测全部依赖。再用 `gaussian_prepare` 创建独立计划：优先复用已确认的 Gaussian 默认配置，首次使用时也可明确传 spec 与 outputs。确认后通过原有 `job_submit` 提交。
+`gaussian_inspect(input_file)` 仍是只读分析工具，保留行号、Link0／Link1、资源与 checkpoint 证据，不提供内置执行方案。注册 Gaussian handler 后用 application_prepare 或重启后的 gaussian_prepare 准备，再用 job_submit 提交。CLI gaussian-prepare 只调用注册 handler，不接受旧 spec／changes 回退。
 
-```bash
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state gaussian-inspect /A/B/test1.gjf
-/ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state \
-  gaussian-prepare lab /A/B/test1.gjf /ABS/HPC_MCP/repo/examples/gaussian/spec-lsf.json \
-  --project-root /A --output test1.log --output test1.chk
-```
-
-示例中的 `lab`、队列、程序命令、计算初始化文件和资源都必须按实际集群调整；[Gaussian 示例](examples/gaussian/)提供 LSF／Slurm 两种 spec 和最小输入卡，不代表已在目标集群运行。声明 CPU 不得少于输入卡要求；Slurm 内存会检查显式冲突，LSF reservation 的作用范围仍由站点决定，Gaussian `%mem` 也不包含全部进程开销。
-
-需要改输入时显式指定 `changes`（CLI `--changes` JSON）：`cpus`、`memory`（例如 `2GB`）、`paths`。路径映射可用原始值，也可用 `oldchk:test1.chk`／`chk:test1.chk` 区分读入与输出。改写仅发生在执行快照，原始卡另存于状态目录的 `run_id/original-input/`；返回原始／有效 SHA-256 和 diff，原卡不变。跨目录旧 checkpoint 必须显式映射到执行目录内，源文件必须在项目 A 中；远程既有 checkpoint 不自动当成本地文件上传。前一 Link1 段产生的 checkpoint 不要求预先存在。
-
-同步所需日志后调用 `gaussian_result(run_id)`，读取最新同步清单中的日志、验证哈希并流式检查正常／异常终止。正常终止数量需匹配 Link1 段数，日志末尾还须有正常终止证据；数量不符或证据不足返回 unknown。应用结果单独保存为 `application_result`，不改写调度器 state；即使调度器 DONE，也可能应用 failed。额外输入、复杂指令和未解析行为必须核对；同一路径不能同时作为上传输入与计算输出。
+输入卡由 agent 在任务目录中明确规范，核数／内存／checkpoint 的修改不隐式发生在插件里。回传日志后，可用 `gaussian_result(run_id, log_path="test1.log")` 做已有 Gaussian 终止分析；也可用 application_validate 核对 manifest 的显式标记。应用终止与调度 DONE 分开记录，均不保证所有科学结果正确。
 
 ### 大文件同步与存储管理
 
@@ -457,7 +440,7 @@ systemctl --user daemon-reload
 
 协调器可以在 agent 退出后推进已授权工作流，但不会替它们自动登记最终结果回传。取得实际提交编号后，再用 monitor_watch 登记所需输出与清理策略。依赖文件同步只服务文件交接。具体限制、错误恢复和示例见 [接口参考](docs/REFERENCE.md#工作流与用量统计)。
 
-`job_usage(run_id)` 查询并保存这项任务的记账证据；`usage_report(project_root="/ABS/A")` 汇总已缓存的项目记录，不自动遍历远程历史。区分申请资源、分配 CPU 时间和实际 CPU 时间；缺失值保留 null，失败刷新保留旧证据并标记陈旧。统计范围与 Slurm 峰值 RSS 的口径随结果返回，不自动修改应用配置。准备真机验收时使用 [测试清单](docs/LIVE_TESTING.md)。
+`job_usage(run_id)` 查询并保存这项任务的记账证据；`usage_report(project_root="/ABS/A")` 汇总已缓存的项目记录，不自动遍历远程历史。区分申请资源、分配 CPU 时间和实际 CPU 时间；缺失值保留 null，失败刷新保留旧证据并标记陈旧。统计范围与 Slurm 峰值 RSS 的口径随结果返回，不自动修改应用配置。准备真机验收时使用 [测试清单](docs/PLUGIN_TESTING.md)。
 
 ## 7. 更新与旧版本迁移
 
@@ -524,7 +507,7 @@ python3 -m compileall -q src tests
 
 源码在 `src/hpc_mcp/`，测试在 `tests/`。标准库 CLI 可通过 `PYTHONPATH=src python3 -m hpc_mcp` 使用，适合依赖安装前的诊断。
 
-当前完整测试共 186 项，包含工作流限流、依赖交接、恢复、用量缺失处理、Gaussian、增量续传、同步进程恢复、清理保护及 Phase 7 的探测／确认／验证；完整协议测试使用官方 SDK。用户已在真实 LSF 上完成此前的提交、状态查询和结果同步。本仓库的离线测试覆盖两种调度器；官方 SDK 2.3.0 的真实 stdio 测试覆盖现代协议发现、旧版初始化握手、56 个工具及其参数发现、首次无配置启动、结构化结果、配置更新、脚本生成、模板／应用配置保存、确认、计划和重启后历史读取，全程不访问 SSH 或提交计算任务。未安装 SDK 时该测试明确跳过，不能当作协议验收通过。Slurm 实际作业、LSF 归档回退、新集群引导闭环及所用 agent 客户端仍需目标环境验收。[官方 SDK 客户端文档](https://py.sdk.modelcontextprotocol.io/client/)
+离线回归包括原 qg16 的 256 组、qvasp 的 576 组条件逐字对照，原 CLI 安全预览产物与 MCP 快照比较，LSF／Slurm 模板的离线提交／同步／卸载，以及官方 SDK 现代／旧版 stdio、重启后的动态工具与 schema。完整验收需安装 MCP extra；缺少 SDK 会明确跳过，不能视为协议通过。插件真实 Gaussian／VASP 计算及客户端重启刷新仍需目标环境验收，见 [验收清单](docs/PLUGIN_TESTING.md)。
 
 当前支持新集群只读探测、脚本证据提取、应用配置确认及短作业验证、MPI／GPU／容器生成、Gaussian 单任务辅助和带预检／续传的同步；常驻监控和自动回传为显式启用。批量并发控制、任务依赖和用量统计已有实现；数组及复杂 Python 入口完整兼容仍待开发，packing 已取消。LSF 状态查询支持 `bacct`／`bhist` 归档回退及终止原因，归档已清理或不可访问时仍无法补齐最终状态。详细规则见 [接口参考](docs/REFERENCE.md)，路线见 [PLAN.md](PLAN.md)。
 

@@ -100,11 +100,15 @@ def materialize(service, value, task_id, handoffs, limit):
                     if hashlib.file_digest(stream, 'sha256').hexdigest() != record['sha256']:
                         raise ValueError('dependency changed during handoff')
             template = dict(original.get('template', {}), workflow_materialization=materialization)
-            result = jobs.job_prepare(original['cluster'], directory, original['script'], original['outputs'],
-                original.get('output_mode', 'filtered'), original.get('output_exclude'), [], original.get('max_input_bytes'),
-                input_files=[e['path'] for e in original['manifest']] + [t for _, t, _ in handoffs],
-                template_context=template, application_context=deepcopy(original.get('application')),
-                generation_context=deepcopy(original.get('generation')))
+            if original.get('template', {}).get('application_plugin'):
+                from .applications import ApplicationService
+                result = ApplicationService(jobs).materialize(original, directory, template)
+            else:
+                result = jobs.job_prepare(original['cluster'], directory, original['script'], original['outputs'],
+                    original.get('output_mode', 'filtered'), original.get('output_exclude'), [], original.get('max_input_bytes'),
+                    input_files=[e['path'] for e in original['manifest']] + [t for _, t, _ in handoffs],
+                    template_context=template, application_context=deepcopy(original.get('application')),
+                    generation_context=deepcopy(original.get('generation')))
             derived = jobs.history.update(result['run']['run_id'], 'dependency_snapshot_created',
                 input_dir=original['input_dir'], project_root=original.get('project_root'),
                 profile=original.get('profile'), dependency_materialization=materialization,

@@ -117,7 +117,7 @@ class LearnedProfileTests(unittest.TestCase):
         self.assertEqual(self.jobs.job_get(small['run']['run_id'])['run']['manifest'], full['run']['manifest'])
         self.assertIs(preparation_receipt(full, False), full)
 
-    def test_cli_reuses_default_without_spec_or_outputs(self):
+    def test_cli_legacy_profile_does_not_authorize_unregistered_application(self):
         self.confirm(self.draft())
         config = self.fixture.root / 'clusters.toml'
         values = asdict(self.jobs.clusters['lsf'])
@@ -126,9 +126,7 @@ class LearnedProfileTests(unittest.TestCase):
         command = [sys.executable, '-m', 'hpc_mcp', '--config', str(config),
                    '--state-dir', str(self.fixture.state), 'gaussian-prepare', 'lsf', str(self.card),
                    '--project-root', str(self.fixture.root)]
-        result = subprocess.run(command, text=True, capture_output=True, check=True)
-        receipt = json.loads(result.stdout)
-        self.assertTrue(receipt['compact'])
-        self.assertEqual(receipt['resources']['cpus'], 28)
-        self.assertEqual(receipt['run']['profile']['name'], 'qg16')
-        self.assertEqual(receipt['gaussian']['diff'], '')
+        result = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)['error'], 'application_not_registered')
+        self.assertFalse((self.fixture.root / 'submissions').exists())

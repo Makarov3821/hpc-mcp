@@ -1,0 +1,100 @@
+{
+  "interface_version": 1,
+  "application": "vasp",
+  "scheduler": "lsf",
+  "clusters": [
+    "lab"
+  ],
+  "description": "Reviewed migration example, not auto-installed. Adapt site paths and cluster before use.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "queue": {
+        "type": "string",
+        "default": "xppn2",
+        "pattern": "[A-Za-z0-9_.-]+"
+      },
+      "job_name": {
+        "type": "string",
+        "default": "vasp",
+        "pattern": "[A-Za-z0-9_.-]+"
+      },
+      "nodes": {
+        "type": "integer",
+        "default": 4,
+        "minimum": 1
+      },
+      "cores_per_node": {
+        "type": "integer",
+        "default": 28,
+        "minimum": 1,
+        "maximum": 192
+      },
+      "mpi_version": {
+        "type": "string",
+        "default": "2020",
+        "pattern": "[A-Za-z0-9_.-]+"
+      },
+      "vasp_version": {
+        "type": "string",
+        "default": "621",
+        "pattern": "[0-9]+"
+      },
+      "program_type": {
+        "type": "string",
+        "default": "std",
+        "enum": [
+          "std",
+          "gam",
+          "ncl"
+        ]
+      },
+      "optcell": {
+        "type": "boolean",
+        "default": false
+      },
+      "openmp": {
+        "type": "boolean",
+        "default": false
+      },
+      "hdf5": {
+        "type": "boolean",
+        "default": false
+      },
+      "bin_dir": {
+        "type": "string",
+        "default": "/apps/vasp/bin",
+        "pattern": "/[A-Za-z0-9_./-]+"
+      },
+      "input_files": {
+        "type": "array",
+        "default": [
+          "INCAR",
+          "POSCAR",
+          "POTCAR",
+          "KPOINTS"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 128
+      },
+      "outputs": {
+        "type": "array",
+        "default": [
+          "log.out",
+          "OUTCAR",
+          "CONTCAR",
+          "CHGCAR",
+          "WAVECAR"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 128
+      }
+    },
+    "additionalProperties": false
+  },
+  "dependencies": []
+}

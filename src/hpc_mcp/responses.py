@@ -13,6 +13,9 @@ def preparation_receipt(result, compact=True):
         'resources': run.get('generation', {}).get('spec', {}).get('resources', {}),
         'input_count': len(run['manifest']), 'input_bytes': sum(e['size'] for e in run['manifest']),
         'details_tool': 'job_get', 'notes': result.get('notes', [])}
+    if run.get('template', {}).get('application_plugin'):
+        receipt['plugin'] = {key: run['template']['application_plugin'][key] for key in
+            ('application', 'version', 'review_token', 'parameters')}
     if 'plan_id' in result:
         receipt['plan_id'] = result['plan_id']
     if 'gaussian' in result:

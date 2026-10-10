@@ -1,0 +1,28 @@
+#BSUB -J water
+#BSUB -q Gaussian
+#BSUB -n 28
+#BSUB -R span[ptile=28]
+#BSUB -o water-%J.out
+
+export g16root=/share/apps/gaussian/G16B01/AVX2
+. /share/apps/gaussian/G16B01/AVX2/g16/bsd/g16.profile
+export GAUSS_SCRDIR=/tmp/reference-run/g16_scr_$LSB_JOBID
+mkdir -p $GAUSS_SCRDIR
+
+ORIG_DIR="$PWD"
+cd "/tmp/reference-run"
+echo 'Job started at' `date`
+echo 'Processing: water.gjf'
+/share/apps/gaussian/G16B01/AVX2/g16/g16 < "water.gjf" > "water.log"
+
+# --- Keep Scratch Mode ---
+echo 'Moving and renaming scratch files to /tmp/reference-run ...'
+for f in "$GAUSS_SCRDIR"/*; do
+    if [ -f "$f" ]; then
+        ext="${f##*.}"
+        mv -f "$f" "/tmp/reference-run/water.${ext}"
+    fi
+done
+rm -rf $GAUSS_SCRDIR
+echo 'Job finished at' `date`
+cd "$ORIG_DIR"

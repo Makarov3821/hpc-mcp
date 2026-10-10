@@ -1,43 +1,26 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；56 个工具通过 `tools/list` 暴露参数 schema。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；基础工具与已激活应用工具通过 `tools/list` 暴露参数 schema，应用工具数量随注册表变化。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
 
-## 新集群引导与应用运行配置
+## 集群引导与应用插件
 
-`serve` 可在指定配置文件不存在时启动空服务，不自动写入占位集群。配置、报告与运行数据继续由绝对 `--config`／`--state-dir` 定位。
+首次启动无应用处理方法；cluster_probe、cluster_configure、settings_get 提供集群基础引导。script_inspect 只分析用户来源，持久报告可用 onboarding_report 读取；软件发现最多 module avail，不搜索磁盘。profile_get/list 仅保留旧配置历史，旧 profile 写入、准备和验证工具已撤出 MCP。
 
-| MCP 工具 | 参数与行为 |
+| 工具 | 参数／行为 |
 | --- | --- |
-| `cluster_probe` | 必填 ssh_host；scheduler=null、work_root=null、paths=null、module_avail=true、max_module_bytes=32768、timeout=30、cluster=null、queue_details=false。SSH 别名校验与普通连接一致；timeout 1..300，模块输出限制 1024..262144 字节，paths 最多 64 个明确的远程绝对路径。cluster 指定时复用既有可信登录初始化与连接参数，SSH 目的地必须一致。返回持久 report_id、候选调度器、队列、模块候选、路径检查与待补信息；不修改配置。 |
-| `onboarding_report(report_id)` | 读取并校验不可变探测／脚本／验证报告，不访问 SSH。 |
-| `profile_draft(name, cluster, application, definition, report_ids=null)` | 保存不可变待审版本，definition 使用 template_import 的 schema；report_ids 最多 32 个，关联来源、校验值、缺失项和未解析项。名称／应用标识 1..100 字符，字母数字开头，其余允许点、下划线、连字符。返回 review_token 和 configuration_file，执行 JSON 位于 state/profiles；尚不可用于准备任务。 |
-| `profile_confirm(profile_id, review_token, confirmation_note, make_default=true)` | 用户确认后保存 exact draft 的确认记录并创建固定 version=1 的内部模板；note 为非空、最多 4096 字符，记录用户对配置和未解析项的确认。默认绑定 cluster/application；重复确认不创建模板新版本。不能验证或提交作业。 |
-| `profile_get(profile_id)` | 返回定义、确认、来源和最近验证证据；本地集群设置变化标记 requires_recheck 与 stale。远程软件变化仍需显式复验。 |
-| `profile_list(cluster=null, application=null, limit=50, offset=0, compact=true)` | 分页列出版本、默认绑定、配置路径和参数声明，limit 1..500，offset 非负；compact=false 返回完整定义。 |
-| `profile_plan(input_dir, profile_id=null, cluster=null, application=null, parameters=null, project_root=null, compact=true)` | 指定 profile_id，或选择 cluster/application 的已确认默认配置。准备一项任务，固定定义与参数；历史附 profile_id、版本、review_token、来源和验证范围。配置发生变化需重新建档确认；不提交。compact=true 返回短回执，完整快照用 job_get 或 compact=false。 |
-| `profile_validate(profile_id, command=null, parameters=null, run_id=null)` | command 必须是用户核对的小型 argv，parameters 为模板绑定；只准备 probe。传 run_id 时不能再传 command／parameters：查询已准备验证作业的状态，成功终态后同步日志并记录证据。 |
+| application_list | 空安装返回空列表；列出 active／versions 与中断删除状态 |
+| application_get | application, version=null；返回完整 manifest、来源文件哈希、代码审阅和真实验证范围 |
+| application_install / application_update | bundle_dir；静态保存新 draft，不执行、不激活 |
+| application_check | application,version,review_token,review_note；代码审阅后执行 cases.json，生成脚本逐字节比对 |
+| application_activate | application,version,review_token,confirmation_note；用户确认 checked 版本，记录集群设置并激活 |
+| application_prepare | application,cluster,input_path,project_root,parameters=null,version=null,compact=true；仅准备，未知应用返回 application_not_registered |
+| application_validate | run_id；读真实任务状态、稳定同步注册日志并核验哈希／显式标记，不提交 |
+| application_remove | application,dry_run=true；预览／完整删除，非终态任务引用阻止删除，不删计算数据 |
+| application_cleanup | older_than_seconds=86400,dry_run=true；清理暂存及无活动引用的非当前版本 |
 
-探测只使用登录信息、调度命令定位、队列查询和具体路径 test；软件发现最多执行一次 `module avail`。没有模块系统、查询失败、超限或信息不完整均保持未知；不递归列目录、扫描安装位置、自动加载候选模块或执行用户提交器。`queue_details=true` 附加固定的 `bqueues -l`／`scontrol show partition` 原始诊断证据，不推断账户／QOS 权限或推荐核数。未知站点策略请用户补充。
+重启后从 manifest 注册 <application>_prepare 工具，参数 schema 可发现；当前连接中的专属工具固定启动时版本，通用分发使用当前应用／集群绑定版本。修改插件文件会拒绝调用，更新走新版本；已有任务与依赖派生固定原版本。所有基础管理步骤无需 LLM，agent 首次改造源码。参阅 [完整插件契约](APPLICATIONS.md)。
 
-配置关联和确认保存在状态 SQLite，执行定义同时保存为 state/profiles/<profile_id>.json。准备时读取并核对已确认定义；旧数据库配置首次访问时导出 JSON。修改执行方式须编辑副本、导入新草案并确认，不直接修改已确认 JSON。报告校验且不可变。手动配置可不带报告；附带的报告需要与目标 SSH 目的地一致。confirmation_note 是 agent 对外部用户确认的记录，MCP 无法独立证明用户确实回复；agent 不得自行填充确认。内部模板名为 `profile.<profile_id>`，准备始终固定版本 1；改变定义创建新 profile 草案，不改写已有版本。
-
-验证使用临时本地 marker 创建独立输入快照，临时源目录随准备结束清理，长期数据仍在 agent 状态目录。作业按有效资源、初始化、启动器和容器运行小型 command，不上传应用输入；替换应用重定向为 validation.log／validation.err。环境需要 Bash、cat、hostname；scratch 中的持久输出仍写在 run 目录。先检查脚本和资源，授权后通过 job_submit 提交；网络响应不明沿用 job_recover。
-
-检查只接受该 profile 的专用 probe，不接受普通历史作业作验证依据。要求新鲜成功终态、稳定同步、日志 SHA 和每个声明任务的 marker／hostname 证据；日志单文件限 1 MiB、总量 2 MiB。失败保持 failed，排队／状态未知／同步失败保持 pending；分别保存用户确认与验证状态。验证覆盖该命令、参数与资源布局的提交、共享目录、初始化和回传，不能替代应用科学结果判定。参数与最近验证的绑定不一致时，新任务记为 unverified；本地集群设置变化拒绝复用旧确认。重新验证远程软件需显式操作，不隐式扫描或执行版本探测。
-
-CLI 对应 `cluster-probe`、`onboarding-report`、`profile-draft`、`profile-confirm`、`profile-get`、`profile-list`、`profile-plan`、`profile-validate`，均可用 `--help` 获取完整参数。例如先调整示例中的站点路径和资源，再运行：
-
-```bash
-hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
-  profile-draft gaussian lab gaussian examples/profiles/gaussian-lsf.json --report-id REPORT_ID
-hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
-  profile-confirm PROFILE_ID REVIEW_TOKEN --confirmation-note '用户确认了资源、环境和待核对项'
-hpc-mcp --config /ABS/AGENT/clusters.toml --state-dir /ABS/AGENT/state \
-  profile-validate PROFILE_ID --command '["bash","-c","command -v g16"]' \
-  --parameters '{"input":"test.gjf","stem":"test"}'
-```
-
-最后一条只准备验证作业；command -v 仅验证命令可见性，完整程序运行和版本需用户指定相应小测试。以本次返回的 run_id 单独提交，完成后用 `profile-validate PROFILE_ID --run-id RUN_ID` 记录证据。
+CLI 对应 application-list/get/install/update/check/activate/prepare/validate/remove/cleanup。check／activate 的 --note 必填；remove／cleanup --apply 才删除。gaussian-prepare CLI 是注册 gaussian 的兼容调用名，不能传旧 spec／changes。旧 profile CLI 写入／执行明确报迁移错误；不自动迁移或重交历史任务。
 
 ## 结构化脚本生成
 
@@ -99,13 +82,13 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 
 静态 Bash 子集支持常用资源、内存／整分钟时间、source 绝对路径、export、module load／purge、mkdir -p、单条 argv 命令及 stdin/stdout/stderr 重定向。交错的初始化及模块操作生成有序 setup_steps。命令替换、变量、分支、循环、多行、追加／复杂描述符、多个命令和未知选项保持 unresolved；引用中的动态符号也保守拒绝转换。没有 shebang 时解释器为 inferred，LSF -n 的 MPI／共享内存含义也必须核对。候选 argv 路径仅 inferred，不自动确定依赖。
 
-`.py` 后缀或 Python shebang 选择 AST 分析：返回候选 constants、CLI parameters、嵌入配置和潜在副作用 evidence，保留行号和原文；不求值名称、调用、f-string、分支或生成器。AST 限 20000 节点、常量递归深度 12、容器元素 128，各报告类别最多 256 项；syntax warning／动态逻辑保留未解析证据，Python 不产生自动 template_draft。MCP／CLI 的 script_inspect 保存报告并返回 report_id，供 profile_draft 引用。
+`.py` 后缀或 Python shebang 选择 AST 分析：返回候选 constants、CLI parameters、嵌入配置和潜在副作用 evidence，保留行号和原文；不求值名称、调用、f-string、分支或生成器。AST 限 20000 节点、常量递归深度 12、容器元素 128，各报告类别最多 256 项；syntax warning／动态逻辑保留未解析证据，Python 不产生自动 template_draft。MCP／CLI 的 script_inspect 保存报告并返回 report_id，供来源审阅与插件迁移参考。
 
 仅无未解析项、单调度器、单静态命令并有明确程序输出时返回通过生成器验证的模板草案；requires_review 始终 true，不证明 Shell 语义完全等价。agent 核对初始化顺序、资源、所有输入、输出和路径后，才能将 draft 作为 definition 传给 template_import；报告本身不是 definition。不改写原脚本，复杂场景仍可用 job_prepare 保存原文。CLI：`script-inspect FILE [--cluster NAME] [--max-bytes N]`。示例见 `examples/inspection/`。
 
 ## 模板与固定计划
 
-模板为结构化 JSON 定义，包含必填 `scheduler`、`spec`、非空 `outputs`，以及可选 `parameters`、`script_name`、`input_files`、`input_exclude`、`output_exclude`、`max_input_bytes`。`parameters` 是名字到 `{type, default?, description?}` 的映射；支持 string、integer、boolean，没有 default 就是必填。`{{name}}` 全值占位保留参数类型，嵌入字符串时转为文本；只替换值、不替换键，不求值，不允许未知参数或未声明占位。资源整数应用全值占位，argv 和环境最终仍须是字符串。
+模板为结构化 JSON 定义，包含必填 `scheduler`、非空 `outputs`，以及通用 `spec`。可选字段为 `parameters`、`script_name`、`input_files`、`input_exclude`、`output_exclude`、`max_input_bytes`。`parameters` 是名字到 `{type, default?, description?}` 的映射；支持 string、integer、boolean，没有 default 就是必填。`{{name}}` 全值占位保留参数类型，嵌入字符串时转为文本；只替换值、不替换键，不求值，不允许未知参数或未声明占位。资源整数应用全值占位，argv 和环境最终仍须是字符串。
 
 | MCP 工具 | 行为 |
 | --- | --- |
@@ -273,21 +256,11 @@ CLI：monitor-watch RUN_ID... [--no-auto-sync] [--sync-options JSON] [--cleanup-
 - 工具不执行更新。停止 MCP 连接后再次核对 Git 工作区，备份配置和完整状态目录，依次执行命令，失败即停。重启使用相同绝对配置、状态路径，然后验证工具发现和历史读取。远程作业继续由调度器运行，无需重新提交。
 - `settings_get.updates` 暴露默认检查参数及 `cached_check`。缓存是历史结果，可能过期；需要及时判断时调用 `update_check`。状态目录只多出一个小型 JSON 缓存，不修改任务数据。不自动配置定时任务或客户端文件，也不自动安装更新。
 
-## Gaussian 接口
+## Gaussian 分析与插件调用
 
-| 工具 | 参数／行为 |
-| --- | --- |
-| `gaussian_inspect` | `input_file`；只读最多 4 MiB 的 `.gjf`／`.com`，返回 SHA-256、分段、字段行号、确定性、资源和候选输出 |
-| `gaussian_prepare` | `cluster,input_file,project_root,spec=null,outputs=null,changes?,dependencies?,allow_unresolved=false,max_input_bytes?,profile_id=null,parameters=null,compact=true`；省略 spec 时加载 cluster/gaussian 默认配置，input/stem 自动绑定；指定 spec 时必须给 outputs，不能混用 profile_id/parameters。默认不改卡，短回执不重复脚本／分析；完整信息用 compact=false 或 job_get。只准备一个 run，提交使用 job_submit |
-| `gaussian_result` | `run_id,log_path?,max_bytes=1048576`；必须先完成所选输出同步，只读取最新下载清单中的日志并核对哈希 |
+`gaussian_inspect(input_file)` 是现有只读输入分析，保留资源、checkpoint、分段和未解析行；不能注册执行方法。`gaussian_result(run_id,log_path?,max_bytes=1048576)` 分析同步且哈希一致的 Gaussian 日志，非旧 Gaussian 准备任务应明确 log_path。应用结果与调度状态独立。
 
-`spec` 同生成器，可通过 `output_directories` 声明相对输出目录；Gaussian 自动补 checkpoint 父目录。默认 stdin 为卡名、stdout 为同名 `.log`。`outputs` 必须明确，`dependencies` 是相对输入列表。`changes` 只接受 cpus 正整数、memory 单位字符串、paths 对象；paths 的键可以是原始值或 `chk:原始值`／`oldchk:原始值`，值是执行目录内的相对路径。改写仅在快照内发生，各 Link1 段使用显式资源改写，并返回 diff、原始／有效哈希。原卡另存于 run_id/original-input/，application.original_snapshot 给出位置；original_manifest 记录校验值，原始副本不上传。snapshot 清理同时涵盖原始与有效快照。
-
-检查 `%chk`、`%oldchk`、`%mem`、`%nprocshared`／`%nproc`；整数内存值支持 KB／MB／GB／TB 和 KW／MW／GW／TW，无单位按 8 字节 word，倍率按 1024。未知、动态或越界字段报告 unresolved，不求值；`allow_unresolved=true` 表示调用方已检查限制。未声明的 Gaussian 默认环境设置不推断。
-
-本地 `%oldchk` 必须存在，显式映射的源也须在项目内；前序 Link1 产生的 checkpoint 不作为外部输入。首次 checkpoint-based route 需要明确旧 checkpoint，读入与输出应分开。路径不自动跟随环境变量、远程 home 或 symlink。资源检查覆盖显式 CPU 与 Slurm 内存冲突；LSF 预留作用范围及软件开销须核对站点。
-
-`application_result` 独立于调度状态。日志使用完整流式扫描、SHA-256 校验和有上限的证据列表；`max_bytes` 为返回证据文本上限（1024..16777216），不是扫描文件大小上限。异常终止为 failed；正常终止数量匹配计划 Link1 段且日志末尾正常终止时 succeeded；否则 unknown。任意非 Gaussian 任务需显式指定其 Gaussian log，默认 stdout.log；工具提供终止证据，不验证所有化学结果。
+gaussian_prepare 不再内置。安装并激活 gaussian handler 后，重启从 manifest 注册此方法；参数为 cluster,input_path,project_root,parameters=null,compact=true，schema 暴露原生成参数。不接受旧 spec／changes。默认输入规范由 agent 完成，checkpoint 依赖通过声明输入和已有文件交接处理。
 
 ## 同步预检、续传与异步操作
 

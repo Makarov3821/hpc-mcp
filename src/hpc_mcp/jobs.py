@@ -85,7 +85,8 @@ class JobService:
                     input_sources: dict[str, str] | None = None,
                     original_inputs: dict[str, str] | None = None,
                     application_context: dict | None = None,
-                    generation_context: dict | None = None) -> dict:
+                    generation_context: dict | None = None, prepared_run_id: str | None = None,
+                    trusted_handler: bool = False) -> dict:
         if cluster not in self.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         config = self.clusters[cluster]
@@ -96,9 +97,9 @@ class JobService:
             raise ValueError("input_dir cannot be inside the local state directory")
         script = relative_path(script)
         if generated_script is not None:
-            if not isinstance(generated_script, str) or not generated_script.startswith("#!/bin/bash\n"):
+            if not isinstance(generated_script, str) or (not trusted_handler and not generated_script.startswith("#!/bin/bash\n")):
                 raise ValueError("generated_script must be a Bash script")
-            if (source / script).exists() or (source / script).is_symlink():
+            if ((source / script).exists() or (source / script).is_symlink()) and not (trusted_handler and (template_context or {}).get("workflow_materialization")):
                 raise ValueError("generated script path conflicts with an existing input")
         project = Path(project_root).expanduser().resolve() if project_root else None
         if project is not None:
@@ -136,10 +137,12 @@ class JobService:
             input_exclude=config.input_exclude if input_exclude is None else input_exclude,
             max_input_bytes=config.max_input_bytes if max_input_bytes is None else max_input_bytes)
         patterns = policy.output_include
-        run_id = "r_" + uuid.uuid4().hex
+        run_id = prepared_run_id or "r_" + uuid.uuid4().hex
+        if not re.fullmatch(r"r_[a-f0-9]{32}", run_id):
+            raise ValueError("invalid prepared run ID")
         run_root = self.history.root / run_id
         staged = run_root / "input"
-        staged.mkdir(parents=True)
+        staged.mkdir(parents=True, exist_ok=False)
         excluded = []
 
         def ignore(directory, names):
@@ -284,6 +287,8 @@ class JobService:
             from .workflow import submission_guard
             submission_guard(self.history, run_id, _workflow_token)
             run = self.history.get(run_id)
+            if run["phase"] == "abandoned":
+                raise ValueError("prepared task was explicitly abandoned; prepare a new task")
             cluster = self._cluster(run)
             prefix = self._receipt_prefix(run)
             if run["phase"] in ("submitted", "rejected"):
@@ -423,8 +428,13 @@ class JobService:
     def job_cancel(self, run_id: str) -> dict:
         with self.history.lock(run_id):
             run = self.history.get(run_id)
+            if not run["job_id"] and run['phase'] in ('prepared', 'abandoned'):
+                from .workflow import submission_guard
+                submission_guard(self.history, run_id, None)
+                updated = self.history.update(run_id, 'prepared_task_abandoned', phase='abandoned', state='cancelled')
+                return {'ok': True, 'run': updated, 'local_only': True}
             if not run["job_id"]:
-                raise ValueError("cannot cancel without a confirmed job ID")
+                raise ValueError("cannot cancel an ambiguous submission without a confirmed job ID")
             cluster = self._cluster(run)
             verb = "scancel" if run["scheduler"] == "slurm" else "bkill"
             scope = cluster_scope(run.get("scheduler_cluster")) if run["scheduler"] == "slurm" else ""

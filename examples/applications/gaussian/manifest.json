@@ -1,0 +1,75 @@
+{
+  "interface_version": 1,
+  "application": "gaussian",
+  "scheduler": "lsf",
+  "clusters": [
+    "lab"
+  ],
+  "description": "Reviewed migration example, not auto-installed. Adapt site paths and cluster before use.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "queue": {
+        "type": "string",
+        "default": "Gaussian",
+        "pattern": "[A-Za-z0-9_.-]+"
+      },
+      "cpus": {
+        "type": "integer",
+        "default": 28,
+        "minimum": 1
+      },
+      "version": {
+        "type": "string",
+        "default": "AVX2",
+        "enum": [
+          "AVX2",
+          "AVX",
+          "SSE4",
+          "Legacy",
+          "Linda",
+          "AMD",
+          "A03",
+          "C02"
+        ]
+      },
+      "exclusive": {
+        "type": "boolean",
+        "default": false
+      },
+      "node": {
+        "type": "string",
+        "default": "",
+        "pattern": "[A-Za-z0-9_.-]*"
+      },
+      "exclude_nodes": {
+        "type": "string",
+        "default": "",
+        "pattern": "(?:[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)?"
+      },
+      "local_scratch": {
+        "type": "boolean",
+        "default": false
+      },
+      "keep_scratch": {
+        "type": "boolean",
+        "default": false
+      },
+      "dependencies": {
+        "type": "array",
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 64
+      }
+    },
+    "additionalProperties": false
+  },
+  "dependencies": [],
+  "validation": {
+    "log": "{input_stem}.log",
+    "success_marker": "Normal termination of Gaussian",
+    "failure_marker": "Error termination"
+  }
+}

@@ -1,0 +1,474 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>hpc-mcp · 使用场景与请求响应架构</title><style>
+:root{--bg:#f5f7fb;--ink:#182b42;--muted:#5c6d80;--line:#dce4ee;--blue:#245db1;--green:#166b57;--amber:#8d5a19}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1330px;margin:auto;padding:32px 26px 50px}h1{font-size:30px;letter-spacing:-.7px;margin:5px 0 10px}h2{font-size:23px;margin:0 0 8px}h3{font-size:16px;margin:0 0 9px}p{margin:0 0 12px}.muted{color:var(--muted)}.eyebrow{font-size:12px;font-weight:700;letter-spacing:2px;color:var(--blue)}.scope{font-size:13px;background:#fff8e9;border-left:3px solid #d4a358;padding:10px 14px;margin:18px 0}.nav{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:20px 0}button{font:inherit;cursor:pointer}.tab{padding:11px 12px;background:white;color:var(--ink);border:1px solid var(--line);border-radius:9px;text-align:left}.tab[aria-selected=true]{border-color:var(--blue);background:#e9f1ff;color:#1c4c91;font-weight:650}.tab:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #799ddb;outline-offset:3px}.scene{background:white;border:1px solid var(--line);border-radius:14px;padding:25px}.status{display:inline-block;font-size:12px;border-radius:20px;background:#fff3df;color:var(--amber);padding:3px 11px;margin-bottom:12px}.io{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}.io>div{background:#f5f8fd;border-radius:9px;padding:14px 16px}.io h3{color:var(--blue)}.io p{font-size:14px;margin:0}.flow{border:1px solid #cbd9ef;border-radius:9px;background:#eef4ff;color:#224e88;padding:12px 16px;margin:16px 0 22px;font-weight:600;font-size:14px}.gridhead,.step{display:grid;grid-template-columns:1fr 1.6fr 1.25fr 1.3fr;gap:12px}.gridhead{font-size:12px;font-weight:700;color:var(--muted);padding:0 12px 9px}.step{position:relative;border:1px solid var(--line);border-radius:10px;margin-bottom:20px;padding:14px 12px;background:#fff}.step:not(:last-child):after{content:'↓ 下一步';position:absolute;bottom:-20px;left:calc(25% + 12px);font-size:11px;color:var(--muted);height:20px;line-height:20px}.cell{font-size:14px}.cell h4{font-size:14px;margin:0 0 6px}.cell.response{background:#ecf7f2;padding:9px;border-radius:7px;color:#174f40}.stepno{display:inline-block;font-size:11px;color:var(--blue);margin-bottom:4px}.mobilelabel{display:none}.modules{grid-column:2 / -1;margin-top:1px;color:var(--muted);font-size:12px}.modules summary{cursor:pointer;color:var(--blue)}.modules p{margin:6px 0 0;font-family:ui-monospace,monospace;font-size:12px}.bottom{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}.card{border:1px solid var(--line);padding:17px;border-radius:10px}.card p,.card li{font-size:13px;color:var(--muted)}.card ul{padding-left:19px;margin:0}.card li+li{margin-top:7px}pre{margin:0 0 10px;background:#13253b;color:#dcecfb;padding:15px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}.feedback-title{color:var(--green)}.summary{margin-top:25px;background:#fff;border:1px solid var(--line);padding:20px;border-radius:12px}.summary table{width:100%;border-collapse:collapse;font-size:13px}.summary td,.summary th{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.summary th{color:var(--muted)}a{color:var(--blue)}footer{margin-top:20px;color:var(--muted);font-size:12px}[hidden]{display:none!important}code{font-family:ui-monospace,monospace;font-size:12px}.divider{margin-top:14px;font-size:13px;color:var(--muted)}
+@media(max-width:950px){.gridhead{display:none}.step{grid-template-columns:1fr 1fr}.mobilelabel{display:block;color:var(--muted);font-size:11px;margin-bottom:4px}.modules{grid-column:1/-1}.step:not(:last-child):after{left:50%}.bottom{grid-template-columns:1fr}}
+@media(max-width:600px){main{padding:20px 12px}.scene{padding:16px 12px}h1{font-size:25px}h2{font-size:20px}.nav{grid-template-columns:1fr 1fr}.io,.step{grid-template-columns:1fr}.step{gap:14px}.summary{padding:14px}.summary table{font-size:12px}.summary td,.summary th{padding:7px 5px}}
+@media print{body{background:white}.nav,footer,.divider{display:none}main{padding:0}.scene,.summary{border:none;padding:0}.step,.card,.io>div{break-inside:avoid}.modules{display:none}.bottom{grid-template-columns:1fr}pre{background:#f1f4f8;color:black}.summary{margin-top:20px}}
+</style></head><body><main>
+<header><div class="eyebrow">HPC-MCP / SCENARIOS</div><h1>从用户输入，看 MCP 如何处理与反馈</h1><p class="muted">一次只看一个使用场景。每一步按“发起请求 → 本地处理 → 远端或持久结果 → 反馈 agent”展开。</p></header>
+<div class="scope"><strong>图的范围：</strong>Phase 8 应用注册、handler 运行器和通用分发已实现；图按当前流程展开。目标集群与客户端真机验收仍单独记录。模块名称可展开查看。</div>
+<nav class="nav" role="tablist" aria-label="使用场景">
+<button class="tab" id="tab-install" role="tab" aria-controls="install" aria-selected="true" tabindex="0">① 安装与集群设置</button>
+<button class="tab" id="tab-register" role="tab" aria-controls="register" aria-selected="false" tabindex="-1">② 提供脚本与注册</button>
+<button class="tab" id="tab-task" role="tab" aria-controls="task" aria-selected="false" tabindex="-1">③ 收到计算任务</button>
+<button class="tab" id="tab-track" role="tab" aria-controls="track" aria-selected="false" tabindex="-1">④ 状态与持续反馈</button>
+<button class="tab" id="tab-sync" role="tab" aria-controls="sync" aria-selected="false" tabindex="-1">⑤ 输出同步与归位</button>
+<button class="tab" id="tab-manage" role="tab" aria-controls="manage" aria-selected="false" tabindex="-1">⑥ 更新与完整卸载</button>
+</nav>
+<section class="scene" id="install" role="tabpanel" aria-labelledby="tab-install">
+<span class="status">已实现：空应用启动与基础集群引导</span><h2>用户提供连接信息，agent 建立一个可用的 MCP 端点</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>agent 类型／数据目录、SSH 别名、LSF 或 Slurm、远程 work_root。免密 SSH 由用户事先配置；未知调度器可先探测。</p></div><div><h3>最终得到什么</h3><p>可连接的 MCP 端点、保存的 clusters.toml 与 state-dir、探测证据。尚未注册应用时，不能直接准备 Gaussian／VASP。</p></div></div><div class="flow">用户 → agent 安装与配置 → MCP 初始化 → SSH 只读探测 → 保存集群设置</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>提供安装位置与 SSH 信息</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+agent 通过本地 shell 安装项目和虚拟环境，配置启动命令及绝对 config／state 路径。此时 MCP 还未启动。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+代码与环境放入 agent 数据目录；用户指定位置时采用显式覆盖。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+安装位置、启动配置、缺少的依赖；agent 向用户报告。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>README 安装流程；此步由 agent／本地 shell 执行，不是 MCP 工具</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>agent 启动 MCP，发现工具</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+stdio 初始化、tools/list、settings_get；加载配置和本地状态。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+MCP 是本地进程端点，SSH 是对集群的外部通道。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+可用基础工具、设置字段；Phase 8 初始应用列表为空。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>cli.py → server.py；config.py、history.py；application_list：初始为空</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>agent 请求 cluster_probe</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+核对 SSH 身份、调度命令、用户指定目录、队列；可选 module avail。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+登录入口执行只读查询；不递归扫描软件、不提交验证任务。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+passed／failed／unknown、缺失项、候选调度器与 report_id。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>cluster_probe.py、service.py → ssh.py；schedulers.py 解析队列</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>用户核对设置，agent 保存</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+用配置接口保存 SSH 目标、scheduler、work_root 等明确值。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+clusters.toml 与状态证据持久化；登录检查不是计算节点验证。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+保存结果、当前集群设置、需要用户补充的项目。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>config.py；cluster_configure／config-set；onboarding_store.py</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;cluster&quot;: &quot;lab&quot;,
+  &quot;scheduler&quot;: &quot;lsf&quot;,
+  &quot;work_root&quot;: &quot;/shared/user/runs&quot;,
+  &quot;checks&quot;: &quot;passed / failed / unknown&quot;,
+  &quot;next_action&quot;: &quot;提供应用脚本并注册&quot;
+}</pre><p>字段概览，非现有工具逐字段响应示例。当前探测和配置接口已有；下一步应用注册属于计划。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>SSH 失败：返回诊断，修复连接后重试；不继续提交。</li>
+<li>调度器不明确：列出候选，用户选定；不猜。</li>
+<li>软件环境信息不足：请求用户脚本或明确路径。</li>
+</ul></article></div></section>
+<section class="scene" id="register" role="tabpanel" aria-labelledby="tab-register" hidden>
+<span class="status">已实现；真实应用计算待目标环境验收</span><h2>把用户脚本变成持久的应用处理插件</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>应用身份（如 gaussian）、适用集群、原提交脚本或 qg16／qvasp 源码、用户希望保留的默认值。</p></div><div><h3>最终得到什么</h3><p>版本化 handler + manifest + 来源 + 对照证据；用户确认后出现应用工具。真机验证状态单独记录。</p></div></div><div class="flow">用户脚本 → agent 一次性改造 → MCP 校验与安装 → 用户确认激活 → 重启发现应用工具</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>用户说明“这是 Gaussian 的脚本”</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+agent 阅读并生成 handler.py 与 manifest；提交脚本转生成器，复杂处理器保留原生成分支。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+生成插件草案，不上传任务、不调用原提交器；LLM 只在这一类代码改造环节参与。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+拟保留的条件、必要差异、未支持功能；agent 展示给用户。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>agent 改造；APPLICATIONS.md 中的 handler v1 契约；此步不是 MCP 自动调用 LLM</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>agent 调用 application_install</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+创建受管理暂存，校验 schema、来源哈希、接口与依赖；经代码审阅后运行对照检查。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+草案／版本文件保存在配置数据目录 applications/；失败清理或记录可恢复状态。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+应用 ID、待确认版本、校验结果、差异与未解析项。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py 插件管理器；不使用现有 qg16_adapter 硬编码学习</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>用户确认，agent 调用 application_activate</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+核对精确版本与确认凭据，原子切换应用／集群默认绑定。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+确认版本与哈希持久化；MCP 重启后从 manifest 加载 gaussian_prepare 等工具。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+active 版本、工具名、参数 schema、是否需重启；不冒充真机验证通过。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py 注册表、server.py 工具加载器 → server.py</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>用户授权一个实际小任务</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+应用插件准备 → 统一提交／追踪／同步 → 核对实际结果。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+集群执行；验证证据关联插件版本、参数、环境和输出。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+passed／pending／failed 的验证范围及原始证据。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>任务核心、SSH／rsync 复用；application_validate：稳定日志及标记证据</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;application&quot;: &quot;gaussian&quot;,
+  &quot;version&quot;: 1,
+  &quot;registration&quot;: &quot;active&quot;,
+  &quot;validation&quot;: &quot;unverified&quot;,
+  &quot;tool&quot;: &quot;gaussian_prepare&quot;,
+  &quot;restart_required&quot;: true
+}</pre><p>反馈字段概览，实际 application_activate 返回完整 application 记录。确认激活与计算节点验证是两个状态。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>未知分支或对照不一致：保留草案，请 agent／用户补充，不激活。</li>
+<li>代码未经审阅：可以静态检查，不执行对照代码。</li>
+<li>工具名冲突、依赖缺失或集群不匹配：返回明确原因。</li>
+</ul></article></div></section>
+<section class="scene" id="task" role="tabpanel" aria-labelledby="tab-task" hidden>
+<span class="status">已实现：注册应用分发、固定 handler 与统一任务核心</span><h2>MCP 根据已注册应用准备任务，再统一上传提交</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>application=gaussian、cluster=lab、A/B/test1.gjf、project_root=A、明确参数覆盖及需要回传的 log／chk。</p></div><div><h3>最终得到什么</h3><p>每项输入对应独立 run_id 和远程目录；提交后获得 job_id。prepare 与 submit 是两个调用，不等待计算完成。</p></div></div><div class="flow">agent → MCP 应用分发 → handler 子进程 → JobService 快照 → SSH／rsync 提交 → JSON 回执</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>agent 调用 application_prepare 或 gaussian_prepare</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+匹配应用／集群／调度器与确认版本，校验 manifest 参数 schema。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+读取注册表；未知应用不执行猜测生成器。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+未注册：application_not_registered、需要的模板信息；已注册则继续。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py：应用分发与注册表；server.py 提供工具 schema</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>agent 提供路径与参数</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+用 JSON 请求调用固定版本 handler，传入远程 run 目录和本地暂存目录。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+handler 只生成提交脚本、上传清单、输出映射；不 SSH、不 bsub／sbatch。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+生成错误明确返回；成功后交任务核心建立准备记录。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py：handler 子进程：schema、路径、超时、输出大小检查</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>MCP 保存 prepared 任务</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+生成输入快照与 SHA 清单，冻结插件版本／参数／脚本、输出规则和目标目录。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+state-dir 保存记录与快照；原输入不变。独立远程目录为 work_root/run_id。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+run_id、prepared、有效资源、输入规模、输出规则；需要细节调用 job_get。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>jobs.py、history.py；template.application_plugin 版本元数据；responses.py 可复用</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>agent 审阅并按用户意图调用 job_submit</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+校验快照，上传并远程校验；保存提交意图，调用正确调度命令。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+rsync → 独立目录；SSH → bsub 或 sbatch。历史保存 job_id 和原始回执。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+提交接受／失败／回执不明，run_id、job_id、诊断。接受不等于计算完成。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>jobs.py → transfer.py、ssh.py；job_scheduler.py；history.py</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;ok&quot;: true,
+  &quot;run&quot;: {
+    &quot;run_id&quot;: &quot;r_example&quot;,
+    &quot;phase&quot;: &quot;prepared&quot;,
+    &quot;state&quot;: &quot;unknown&quot;,
+    &quot;remote_dir&quot;: &quot;/shared/user/runs/r_example&quot;,
+    &quot;outputs&quot;: [
+      &quot;test1.log&quot;,
+      &quot;test1.chk&quot;
+    ]
+  },
+  &quot;details_tool&quot;: &quot;job_get&quot;
+}</pre><p>准备回执的精简字段示意。现有准备回执已支持 compact；精简准备回执已包含 plugin 版本与参数。现有 submit／status 返回的 run 可能更完整。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>没有注册 Gaussian：请求用户提供模板，进入场景②。</li>
+<li>多版本／集群绑定有歧义：返回候选，不自动选。</li>
+<li>提交回执不明：用 job_recover 恢复，禁止盲目重交。</li>
+<li>多输入先展开独立 run；授权 workflow 后按并发限制推进，不 packing。</li>
+</ul></article></div></section>
+<section class="scene" id="track" role="tabpanel" aria-labelledby="tab-track" hidden>
+<span class="status">查询、监控、工作流基础能力已有</span><h2>agent 查询状态；可选协调器在断开连接后继续追踪</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>run_id；或明确 monitor_watch 的任务范围、同步选择、重试和清理策略，再启用协调器。</p></div><div><h3>最终得到什么</h3><p>调度状态、查询是否成功、错误原因及持久通知。排队和运行期间不占住一个工具调用等待完成。</p></div></div><div class="flow">agent 查询 / 协调器 tick → 状态服务 → 调度器与归档 → SQLite → agent 下次查询读取</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>agent 调用 job_status(run_id)</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+读取已登记身份，核对集群配置，查询实时记录并按需归档回退。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+LSF：bjobs → bacct／bhist；Slurm：squeue → sacct。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+state、raw_state、exit_code／reason、status_query_ok、查询时间与诊断。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>jobs.py、job_scheduler.py → ssh.py；history.py</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>查询失败或记录暂不可见</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+保留最后已知状态，返回查询失败／未知证据；不当作已完成。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+持久历史保留旧观察，当前查询记录失败原因。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+agent 应说明状态未确认，按策略稍后查询；不立即同步为最终结果。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>history.py；jobs.py 状态诊断</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>agent 明确开启 monitor_watch + monitor_start</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+协调进程按固定策略轮询，必要时启动同步 worker，写完成／需要注意的事件。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+coordinator 和 worker 是独立本地进程；监控默认关闭。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+监控状态、同步 operation_id、通知游标；连接断开后记录仍可保留。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>monitor.py、coordinator.py、monitor_engine.py、operations.py、worker.py</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>agent 调用 monitor_notifications 或 job_get</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+读取持久通知／本地任务详情；用游标避免反复展示同一事件。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+SQLite 中保存任务事件、监控进度与通知；已授权工作流可独立推进。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+完成、失败、同步冲突、需要用户处理的事项；agent 组织成用户可读回答。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>monitor_notifications；history.py；workflow_engine.py</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;run_id&quot;: &quot;r_example&quot;,
+  &quot;state&quot;: &quot;running&quot;,
+  &quot;raw_state&quot;: &quot;RUN&quot;,
+  &quot;status_query_ok&quot;: true,
+  &quot;last_status_query&quot;: &quot;查询时间&quot;,
+  &quot;sync_state&quot;: &quot;not_synced&quot;
+}</pre><p>状态字段概览，实际嵌套在 run 中。状态、同步和应用结果不是同一个字段。这里的反馈以工具响应／通知读取为主，不保证客户端主动推送。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>监控未启用：agent 主动轮询，MCP 不悄悄创建后台服务。</li>
+<li>停止协调器不会取消已提交计算；取消需单独 job_cancel。</li>
+<li>cancel_requested 只是请求事实，最终取消需终止证据。</li>
+<li>状态 succeeded 不自动证明科学计算有效；应用结果另查。</li>
+</ul></article></div></section>
+<section class="scene" id="sync" role="tabpanel" aria-labelledby="tab-sync" hidden>
+<span class="status">已实现：同步治理与 manifest 终止标记验证</span><h2>选定结果下载到原任务位置，并反馈完整性与应用结果</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>run_id、includes（如 test1.log／test1.chk）、目标 A/B、覆盖策略、大小限制与 stable_only。</p></div><div><h3>最终得到什么</h3><p>所选结果安装到 A/B；返回路径、文件清单、大小／SHA、同步状态与应用判据。成功暂存清理，失败部分可恢复。</p></div></div><div class="flow">agent / 已授权监控 → 选择与预检 → rsync 暂存 → 核验 → A/B 归位 → 回执 / 通知</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>agent 请求 job_sync_preview</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+核对选择规则、文件规模、可用空间和目标目录；不下载结果。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+SSH／rsync dry-run 返回选中文件。输入保护与覆盖冲突提前报告。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+拟下载清单、大小、目标、限制及需要用户决定的冲突。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>jobs.py、sync_support.py、transfer.py</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>agent 调用 job_sync 或 job_sync_start</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+固定本次选择与策略；大文件可交给后台 worker 并返回 operation_id。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+项目模式暂存位于 A/.hpc-mcp-sync/run_id/...；rsync 支持部分续传。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+同步立即完成的回执，或后台操作 ID；进度用 job_sync_operation 查询。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>operations.py → worker.py → jobs.py、transfer.py</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>传输完成，MCP 核验并安装</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+复查大小／mtime／哈希与终态；检查输入保护、目标冲突后归位。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+test1.log／test1.chk 放回 A/B；清除成功暂存。失败不覆盖结果，可保留部分供恢复。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+output_dir、output_manifest、sync_state=complete／partial／failed、sync_error。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>jobs.py、sync_support.py、history.py；storage.py 管理缓存清理</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>agent 按应用能力检查结果</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+gaussian_result 保留只读分析；application_validate 使用 manifest 明确的成功／失败终止标记。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+调度终态与应用终止证据分别保存；卸载插件不删除这些输出与任务历史。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+应用 succeeded／failed／unknown、证据；缺少判据时不能声称计算正确。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>现有 gaussian.py；application_validate：显式标记判据，不验证科学正确性</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;run_id&quot;: &quot;r_example&quot;,
+  &quot;sync_state&quot;: &quot;complete&quot;,
+  &quot;output_dir&quot;: &quot;/ABS/A/B&quot;,
+  &quot;files&quot;: [
+    &quot;test1.log&quot;,
+    &quot;test1.chk&quot;
+  ],
+  &quot;application_result&quot;: &quot;succeeded / failed / unknown（有判据时）&quot;
+}</pre><p>反馈内容示意；现有同步返回 output_manifest，含文件路径、大小和校验值。应用结果由单独工具给出，不承诺每个软件都有结果判据。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>任务仍运行：普通同步标 partial；stable_only 不允许冒充最终输出。</li>
+<li>文件变化、缺失、空间不足或覆盖冲突：返回诊断，不把失败记为完成。</li>
+<li>本地结果归位后，远程目录和历史按独立清理策略管理，不随意删除。</li>
+</ul></article></div></section>
+<section class="scene" id="manage" role="tabpanel" aria-labelledby="tab-manage" hidden>
+<span class="status">已实现：标准插件更新、卸载与恢复</span><h2>应用插件的管理交给固定程序，清理范围可预览与核验</h2>
+<div class="io"><div><h3>需要提供什么</h3><p>application_id、精确版本或新插件包、preview／apply、明确删除意图。</p></div><div><h3>最终得到什么</h3><p>版本切换或卸载回执；清除受管理安装残留，保留用户输入、输出、任务历史。新工具集合重启生效。</p></div></div><div class="flow">agent 管理请求 → 占用检查 → 事务与文件操作 → 注册刷新 → 残留核验 → JSON 回执</div>
+<div class="gridhead"><div>① 用户／agent 发起</div><div>② 本地安装／MCP 处理</div><div>③ 远端／持久结果</div><div>④ 反馈给 agent</div></div><div class="steps">
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 01</span><h4>agent 请求 application_update</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+新版本走与首次安装相同的校验／确认流程；原子切换激活版本。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+旧任务固定旧版本及实际脚本；更新不重新提交、不改已准备快照。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+版本、验证范围、激活结果、是否需重启；默认绑定按集群区分。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py 插件管理器与注册表；既有任务快照继续复用</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 02</span><h4>agent 调用 application_remove(preview)</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+列出受管理文件、依赖引用、活动任务和工作流后续生成引用。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+只检查明确路径与引用，不按软件名猜系统安装位置。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+将删除的路径／大小、阻止原因、保留的数据与影响。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py：任务引用与受管理路径检查</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 03</span><h4>用户确认删除，agent apply</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+锁定并禁止新调用，清除应用绑定、版本与专属文件；中断可恢复。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+本版依赖使用共享 MCP Python 环境，不创建插件专属环境、也不自动卸载共享模块。活动占用先返回 application_in_use。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+完成／失败／已删除、已清路径及残留原因；重复操作幂等。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>applications.py：removing 恢复状态与共享环境保留</p></details></article>
+<article class="step">
+<div class="cell"><span class="mobilelabel">用户／agent 发起</span>
+<span class="stepno">STEP 04</span><h4>MCP 核验，agent 重启刷新</h4>
+</div>
+<div class="cell"><span class="mobilelabel">本地安装／MCP 处理</span>
+确认脚本、注册与专属暂存已清除，清理过期草案／无引用版本。
+</div>
+<div class="cell"><span class="mobilelabel">远端／持久结果</span>
+用户项目与远程计算数据单独管理；保留最小审计与历史标识。
+</div>
+<div class="cell response"><span class="mobilelabel">反馈给 agent</span>
+应用工具已移除或仍需重启；未知应用再次请求模板。
+</div>
+<details class="modules"><summary>涉及的模块／接口</summary><p>application_cleanup；server.py 启动时工具加载</p></details></article>
+</div><div class="bottom"><article class="card"><h3 class="feedback-title">agent 收到哪些信息</h3><pre>{
+  &quot;application&quot;: &quot;gaussian&quot;,
+  &quot;status&quot;: &quot;removed&quot;,
+  &quot;residual_paths&quot;: [],
+  &quot;preserved&quot;: [
+    &quot;用户输入&quot;,
+    &quot;计算输出&quot;,
+    &quot;任务历史&quot;
+  ],
+  &quot;restart_required&quot;: true
+}</pre><p>卸载反馈字段概览，apply 返回 paths、blockers、status 与 residual_paths。无安装残留指清除受管理文件，不承诺安全擦除，也不删除计算数据。</p></article><article class="card"><h3>异常与分支如何响应</h3><ul>
+<li>存在插件运行／活动任务／版本引用：明确返回占用对象，不暗中取消。</li>
+<li>卸载中断：下次恢复完成；残留删除失败有明确原因。</li>
+<li>MCP 软件自身升级继续走 update_*；这是另一条流程，不等于应用插件更新。</li>
+</ul></article></div></section>
+<section class="summary"><h2>反馈是分阶段的，不是一个“计算完成”布尔值</h2><table><thead><tr><th>阶段</th><th>关键反馈</th><th>agent 应如何解释</th></tr></thead><tbody>
+<tr><td>已准备</td><td>run_id、脚本、资源、输入清单、输出规则、插件版本（计划）</td><td>可审阅并提交；尚未上传／运行。</td></tr>
+<tr><td>已提交</td><td>job_id、提交回执、是否存在回执不明</td><td>队列接受了任务；随后查询状态。</td></tr>
+<tr><td>运行状态</td><td>state、原始状态、查询是否成功、时间与原因</td><td>区分排队、运行、失败、取消和未知；不伪造终态。</td></tr>
+<tr><td>已同步</td><td>实际目录、文件清单与 SHA、complete／partial、错误</td><td>说明哪些文件已回本地，是否为稳定终态结果。</td></tr>
+<tr><td>应用结果</td><td>终止判据与证据；判据不足则 unknown</td><td>与调度成功分开；没有应用判据不推断科学正确性。</td></tr>
+</tbody></table><p class="divider">MCP 返回结构化工具响应。agent 负责把这些信息转述给用户；可选后台进程写持久通知，agent 读取通知后再反馈。日常处理不在 MCP 内部调用 LLM。</p></section>
+<footer>2026-10-10 · 无外部依赖，可离线打开、打印当前场景。<br>按模块查看旧图：<a href="architecture-modules.html">模块架构参考</a> · 详细实施范围：PLAN.md / Phase 8。</footer>
+</main><script>
+const tabs=[...document.querySelectorAll('[role="tab"]')];
+function select(tab){for(const t of tabs){const selected=t===tab;t.setAttribute('aria-selected',String(selected));t.tabIndex=selected?0:-1;document.getElementById(t.getAttribute('aria-controls')).hidden=!selected;}history.replaceState(null,'','#'+tab.getAttribute('aria-controls'));}
+for(const [index,tab] of tabs.entries()){tab.addEventListener('click',()=>select(tab));tab.addEventListener('keydown',event=>{let next;if(event.key==='ArrowRight')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();select(tabs[next]);tabs[next].focus();});}
+const match=tabs.find(t=>'#'+t.getAttribute('aria-controls')===location.hash);if(match)select(match);
+</script><noscript><style>.scene[hidden]{display:block!important}.nav{display:none}.scene{margin-bottom:25px}</style><p>未启用 JavaScript，全部场景依次展示。</p></noscript></body></html>

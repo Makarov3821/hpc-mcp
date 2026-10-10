@@ -236,8 +236,57 @@ def main():
     logs.add_argument("run_id")
     logs.add_argument("--stream", choices=("stdout", "stderr"), default="stdout")
     logs.add_argument("--lines", type=int, default=100)
+    for action in ('application-list', 'application-install', 'application-update', 'application-get',
+                   'application-check', 'application-activate', 'application-prepare', 'application-remove',
+                   'application-cleanup', 'application-validate'):
+        ap = sub.add_parser(action)
+        if action in ('application-install', 'application-update'):
+            ap.add_argument('bundle_dir')
+        elif action == 'application-validate':
+            ap.add_argument('run_id')
+        elif action not in ('application-list', 'application-cleanup'):
+            ap.add_argument('application')
+            if action in ('application-check', 'application-activate'):
+                ap.add_argument('version', type=int); ap.add_argument('review_token')
+                ap.add_argument('--note', required=True)
+            elif action in ('application-get', 'application-prepare'):
+                ap.add_argument('--version', type=int)
+        if action == 'application-prepare':
+            ap.add_argument('cluster'); ap.add_argument('input_path'); ap.add_argument('--project-root', required=True)
+            ap.add_argument('--parameters', default='{}'); ap.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
+        if action in ('application-remove', 'application-cleanup'):
+            ap.add_argument('--apply', action='store_true')
+        if action == 'application-cleanup':
+            ap.add_argument('--older-than-seconds', type=int, default=86400)
     args = parser.parse_args()
     try:
+        if args.action in ('profile-draft', 'profile-confirm', 'profile-plan', 'profile-validate'):
+            raise ValueError('legacy application profile requires migration; use application-install/check/activate/prepare')
+        if args.action.startswith('application-') or args.action == 'gaussian-prepare':
+            from .applications import ApplicationService
+            from .jobs import JobService
+            from .responses import preparation_receipt
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            apps = ApplicationService(JobService(clusters, args.state_dir))
+            action = args.action.removeprefix('application-')
+            if action == 'list': data = apps.list()
+            elif action in ('install', 'update'): data = apps.install(args.bundle_dir)
+            elif action == 'get': data = apps.get(args.application, args.version)
+            elif action == 'check': data = apps.check(args.application, args.version, args.review_token, args.note)
+            elif action == 'activate': data = apps.activate(args.application, args.version, args.review_token, args.note)
+            elif action == 'remove': data = apps.remove(args.application, not args.apply)
+            elif action == 'cleanup': data = apps.cleanup(args.older_than_seconds, not args.apply)
+            elif action == 'validate': data = apps.validate(args.run_id)
+            elif args.action == 'gaussian-prepare':
+                if args.spec_file or args.profile_id or args.changes or args.output or args.dependency:
+                    raise ValueError('Gaussian execution requires a registered handler; use declared parameters, not a generic spec')
+                data = preparation_receipt(apps.prepare('gaussian', args.cluster, args.input_file, args.project_root,
+                    json.loads(args.parameters) if args.parameters else None), args.compact)
+            else:
+                data = preparation_receipt(apps.prepare(args.application, args.cluster, args.input_path,
+                    args.project_root, json.loads(args.parameters), args.version), args.compact)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            sys.exit(0 if data.get('ok') else 1)
         if args.action == "script-inspect":
             from .profiles import ProfileService
             from .jobs import JobService
@@ -362,24 +411,6 @@ def main():
                 else:
                     data = monitor.watch(args.run_ids, args.auto_sync, json.loads(args.sync_options),
                                          json.loads(args.cleanup_policy), args.reset)
-            elif args.action == "gaussian-prepare":
-                from .gaussian import GaussianService
-                from .responses import preparation_receipt
-                changes = json.loads(args.changes) if args.changes is not None else None
-                if args.spec_file is None:
-                    from .profiles import ProfileService
-                    data = ProfileService(service, jobs).gaussian_plan(args.cluster, args.input_file,
-                        args.project_root, args.profile_id, json.loads(args.parameters) if args.parameters else None,
-                        args.output, changes, args.dependency, args.allow_unresolved, args.max_input_bytes)
-                else:
-                    if args.profile_id is not None or args.parameters is not None:
-                        raise ValueError('choose a saved profile or an explicit spec, not both')
-                    if not args.output:
-                        raise ValueError('explicit spec requires --output')
-                    data = GaussianService(jobs).prepare(args.cluster, args.input_file, args.project_root,
-                        json.loads(Path(args.spec_file).read_text()), args.output, changes,
-                        args.dependency, args.allow_unresolved, args.max_input_bytes)
-                data = preparation_receipt(data, args.compact)
             elif args.action == "gaussian-result":
                 from .gaussian import GaussianService
                 data = GaussianService(jobs).result(args.run_id, args.log_path, args.max_bytes)
@@ -435,7 +466,9 @@ def main():
             else:
                 data = getattr(jobs, "job_" + args.action)(args.run_id)
     except (OSError, ValueError, ImportError, sqlite3.Error) as exc:
-        data = {"ok": False, "error": str(exc)}
+        data = {"ok": False, "error": getattr(exc, "code", str(exc))}
+        if hasattr(exc, "details"):
+            data.update(message=str(exc), **exc.details)
         if args.action == "serve":
             print(json.dumps(data, ensure_ascii=False), file=sys.stderr)
             sys.exit(1)
