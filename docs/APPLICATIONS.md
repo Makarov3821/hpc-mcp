@@ -23,19 +23,19 @@ agent 先调用 setup_flow_create 创建 application_adaptation 流程，仅在�
 
 参数采用有界 JSON Schema 子集：object／string／integer／boolean／array，以及 properties、required、additionalProperties=false、default、description、enum、minimum、maximum、pattern、items、maxLength、maxItems。未知关键字拒绝；整数默认非负，上限 2147483647，字符串默认最长 4096，数组默认最多 1024 项。输入覆盖只接受声明参数。没有未知参数透传、表达式求值或跨调度器转换。
 
-`dependencies` 是当前 MCP Python 环境中的顶层模块名。缺少模块返回 application_dependency_missing，由用户／agent 明确安装到 MCP 虚拟环境；MCP 不自动执行 pip，不创建插件专属环境，不卸载共享依赖。因此本版卸载不遗留专属依赖环境，也不会破坏其他插件。
+`dependencies` 是当前 MCP Python 环境中的顶层模块名。缺少模块返回 application_dependency_missing，由用户／agent 明确安装到 MCP 虚拟环境；MCP 不自动执行 pip，不创建插件专属环境，不卸载共享依赖。激活时固定依赖哈希，运行时变化拒绝；传递依赖须全部声明。卸载不遗留专属依赖环境，也不会破坏其他插件。
 
 可选验证定义：`{"log":"{input_stem}.log","success_marker":"Normal termination","failure_marker":"Error termination"}`。只支持明确日志路径与字面终止标记，不求值；失败标记优先，成功标记要求位于日志最后 8192 字符。没有判据返回 unverified。此判据不验证科学正确性。
 
 ## Handler 请求与响应
 
-MCP 使用当前 Python 的 `-I -B` 在独立子进程中执行已审阅 handler；stdin 为一个 JSON 对象，stdout 必须只输出一个 JSON 对象，诊断写 stderr。运行暂存由 MCP 创建并在成功／失败后清除，超时与输出超预算会终止进程组。子进程不是强安全沙箱，代码审阅和用户确认必需。
+MCP 默认通过 Linux bubblewrap／seccomp 隔离的 Python `-I -S -B` 执行 handler；stdin/stdout 为单个 JSON 对象，诊断写 stderr。插件和选定输入只读，仅 staging 可写；网络及子进程禁止，资源预算硬限制，结束后清除副本。隔离不可用明确失败，用户可显式配置 trusted 并接受宿主权限；完整边界、配置与依赖限制见 [Handler runner](HANDLER_RUNNER.md)。
 
 请求包含：`interface_version`、`input_path`、`input_dir`、`input_name`（任务目录为 null）、`remote_dir`、`scheduler`、补齐默认值的 `parameters`、`staging_dir`。
 
 响应：`script`（完整提交脚本文本）、非空相对路径 `input_files`、非空同步规则 `outputs`，可选 `resources` 对象。提交文件允许没有 shebang；保留用户原格式。MCP 保存为 `hpc-mcp-job.sh`，此文件名不能与输入冲突。helper 文件可通过 `__file__` 所在目录读取，不能依赖原 CWD 或隐式导入用户环境。
 
-handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、不扫描提交其他任务或留下后台进程。用户选择一项输入／任务目录即生成独立 run；多项通过多个准备调用再交 workflow 管理，不 packing。输出大小预算覆盖 stdout/stderr；代码可信，不宣称限制任意本地副作用。
+handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、不扫描提交其他任务或留下后台进程。用户选择一项输入／任务目录即生成独立 run；多项通过多个准备调用再交 workflow 管理，不 packing。输出大小预算覆盖 stdout/stderr。单卡 handler 若需读取辅助文件，应选择明确任务目录；input_files 仍决定后续上传清单。
 
 ## 生命周期与独立审阅循环
 

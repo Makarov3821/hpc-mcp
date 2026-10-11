@@ -71,7 +71,7 @@ Phase 9A 历史记录若没有 business 字段，保留原关闭语义；旧 ope
 
 底层状态为 allocating → open → completed/abandoned → cleaning → cleaned，旧记录的 closing 可恢复；business.stage 表达上面的步骤。意图先持久化，操作失败保留 last_error 与 operation。get 在等待确认时只读检查有效性，失效返回 confirmation_status.valid=false 和下一步提示；读取不执行 SSH。
 
-resume 只重放已记录动作：探测是只读重试，安装根据操作身份找回版本，报告根据操作身份去重，确认检查配置基线并恢复既有授权。已完成配置写入可恢复收尾；尚未写入且探测过期不能继续应用。没有后台自动推进或清理。可信同账户进程仍可能修改文件；这些检查不是执行沙箱（Phase 10A）。
+resume 只重放已记录动作：探测是只读重试，安装根据操作身份找回版本，报告根据操作身份去重，确认检查配置基线并恢复既有授权。已完成配置写入可恢复收尾；尚未写入且探测过期不能继续应用。没有后台自动推进或清理。可信同账户进程仍可能修改文件；流程检查本身不隔离同账户进程；handler 运行隔离另见 [Phase 10A 执行器](HANDLER_RUNNER.md)。
 
 MCP：setup_flow_create/get/list/events/resume/step/confirm/close/cleanup。list 支持 limit／offset，events 支持 limit／after_id。CLI 对应 setup-flow-*：
 

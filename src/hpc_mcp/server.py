@@ -37,6 +37,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "application summaries by default; Markdown is not executable configuration and is never read for dispatch. "
         "Request an independent fresh-context reviewer for original code and handler changes. Record its report verbatim; revise and install a new version until review passes before user confirmation. "
         "User confirmation through setup_flow_confirm (or legacy unmanaged application_activate) is separate from real compute-node validation. "
+        "Call handler_runner_status during installation; isolation is required by default. Never silently configure trusted mode when unavailable; explain host access and obtain explicit user permission. "
         "Use registered application handlers for daily prepare; job_submit is separate. Never execute original submission wrappers. "
         "Preview application_remove before deleting; preserve user computation data and history."))
     templates = TemplateService(jobs)
@@ -433,6 +434,26 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         return updates.plan(force, max_age_seconds, timeout)
 
     @server.tool()
+    def handler_runner_status(probe: bool = True) -> dict[str, Any]:
+        """Read local generator permissions and limits; optionally test Linux isolation availability.
+
+        A missing sandbox is an error for generation, never an implicit trusted fallback.
+        Does not execute application handlers or connect to a cluster.
+        """
+        return application_call(applications.runner.describe, probe)
+
+    @server.tool()
+    def handler_runner_configure(settings: dict, confirmation_note: str) -> dict[str, Any]:
+        """Replace local handler-runner settings after explicit user permission.
+
+        mode=isolated is default. mode=trusted removes filesystem/network/process isolation;
+        explain this host-user access downgrade before requesting user confirmation.
+        Limits: memory_bytes, staging_bytes, input_bytes, dependency_bytes,
+        timeout_seconds, max_output_bytes. This does not authorize remote submission.
+        """
+        return application_call(applications.runner.configure, settings, confirmation_note)
+
+    @server.tool()
     def settings_get(cluster: str | None = None) -> dict[str, Any]:
         """Discover every cluster setting and server startup path.
 
@@ -447,6 +468,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     "watch_defaults": {"auto_sync": True, "sync_options": None,
                         "cleanup_policy": cleanup_from(None), "reset": False},
                     "enabled_by_default": False, "runtime_settings": monitor.runtime().get("settings")},
+                "handler_runner": applications.runner.describe(),
                 "script_resources": asdict(Resources()),
                 "script_execution": {"launcher": {"kind": "srun", "arguments": []},
                     "container": {"runtime": "apptainer", "image": "/remote/trusted.sif", "binds": [], "gpu": None},

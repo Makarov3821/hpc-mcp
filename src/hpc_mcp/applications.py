@@ -9,13 +9,11 @@ import os
 from pathlib import Path
 import re
 import shutil
-import signal
-import subprocess
-import sys
 import tempfile
 import time
 import uuid
 
+from .handler_runner import HandlerRunner, RunnerError
 from .history import now
 from .jobs import relative_path, file_manifest
 from .config import validate_patterns
@@ -97,6 +95,7 @@ class ApplicationService:
         self.jobs = jobs
         self.root = jobs.history.root / 'applications'
         self.index = self.root / 'registry.json'
+        self.runner = HandlerRunner(jobs.history.root)
 
     @staticmethod
     def name(value):
@@ -163,7 +162,7 @@ class ApplicationService:
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f'{key} outside bounds')
         deps = manifest.get('dependencies', [])
-        if not isinstance(deps, list) or any(not isinstance(d, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', d) for d in deps):
+        if not isinstance(deps, list) or len(deps) > 32 or len(set(d for d in deps if isinstance(d, str))) != len(deps) or any(not isinstance(d, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', d) for d in deps):
             raise ValueError('dependencies must be importable top-level module names; no automatic pip install')
         validation = manifest.get('validation')
         if validation is not None:
@@ -285,55 +284,37 @@ class ApplicationService:
         schema_check(manifest['parameters'], values, True)
         return values
 
-    def execute(self, record, path, request):
+    def execute(self, record, path, request, input_exclude=None):
         manifest = record['manifest']
-        import importlib.util
-        missing = [d for d in manifest.get('dependencies', []) if importlib.util.find_spec(d) is None]
-        if missing:
-            raise ApplicationError('application_dependency_missing', 'Install declared dependencies in the MCP environment.', modules=missing)
-        with tempfile.TemporaryDirectory(prefix='.run-', dir=self.root) as temp:
-            work = Path(temp)
-            request = dict(request, interface_version=1, staging_dir=str(work))
-            request['parameters'] = self.bindings(manifest, request.get('parameters'))
-            with tempfile.TemporaryFile() as inp, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-                inp.write(json.dumps(request, allow_nan=False).encode()); inp.seek(0)
-                process = subprocess.Popen([sys.executable, '-I', '-B', str(path / 'handler.py')],
-                    stdin=inp, stdout=out, stderr=err, cwd=work, start_new_session=True)
-                start = time.monotonic(); limit = manifest.get('max_output_bytes', 262144)
-                reason = None
-                while process.poll() is None:
-                    if time.monotonic() - start > manifest.get('timeout_seconds', 30):
-                        reason = 'application_timeout'; break
-                    if os.fstat(out.fileno()).st_size + os.fstat(err.fileno()).st_size > limit:
-                        reason = 'application_output_limit'; break
-                    time.sleep(.02)
-                # Kill descendants even if the handler has exited; no unmanaged background processes.
-                try: os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError: pass
-                process.wait()
-                out.seek(0); err.seek(0)
-                raw, diagnostic = out.read(limit + 1), err.read(limit + 1)
-                if reason or len(raw) + len(diagnostic) > limit:
-                    raise ApplicationError(reason or 'application_output_limit', 'Handler exceeded execution budget.')
-                if process.returncode:
-                    raise ApplicationError('application_handler_failed', diagnostic.decode(errors='replace')[:4096])
-            try: result = json.loads(raw)
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise ApplicationError('application_protocol_error', 'Handler stdout must be one JSON object.') from exc
-            if not isinstance(result, dict) or set(result) - {'script', 'input_files', 'outputs', 'resources'} or not isinstance(result.get('script'), str):
-                raise ValueError('handler result requires script text, input_files, outputs; optional resources')
-            inputs, outputs = result.get('input_files'), result.get('outputs')
-            if not isinstance(inputs, list) or not inputs or any(not isinstance(p, str) for p in inputs):
-                raise ValueError('handler requires explicit input_files')
-            for p in inputs: relative_path(p)
-            if not isinstance(outputs, list) or not outputs:
-                raise ValueError('handler requires nonempty outputs')
-            validate_patterns(outputs)
-            if not isinstance(result.get('resources', {}), dict):
-                raise ValueError('handler resources must be an object')
-            if '\x00' in result['script'] or len(result['script'].encode()) > limit:
-                raise ValueError('invalid generated script')
-            return result, request['parameters']
+        if manifest.get('dependencies') and record.get('status') == 'active' and 'runner_dependencies' not in record:
+            raise ApplicationError('application_dependency_changed', 'Reactivate this legacy version to pin declared dependencies.')
+        bound = self.bindings(manifest, request.get('parameters'))
+        try:
+            cluster = next((c for c in self.jobs.clusters.values() if c.name in manifest['clusters']), None)
+            raw, execution = self.runner.run(manifest, path, dict(request, parameters=bound),
+                record.get('runner_dependencies'), input_exclude if input_exclude is not None else (cluster.input_exclude if cluster else ()),
+                expected_files=record['files'])
+        except RunnerError as exc:
+            raise ApplicationError(exc.code, str(exc), **exc.details) from exc
+        limit = execution['effective_max_output_bytes']
+        try: result = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ApplicationError('application_protocol_error', 'Handler stdout must be one JSON object.') from exc
+        if not isinstance(result, dict) or set(result) - {'script', 'input_files', 'outputs', 'resources'} or not isinstance(result.get('script'), str):
+            raise ValueError('handler result requires script text, input_files, outputs; optional resources')
+        inputs, outputs = result.get('input_files'), result.get('outputs')
+        if not isinstance(inputs, list) or not inputs or any(not isinstance(p, str) for p in inputs):
+            raise ValueError('handler requires explicit input_files')
+        for p in inputs: relative_path(p)
+        if not isinstance(outputs, list) or not outputs:
+            raise ValueError('handler requires nonempty outputs')
+        validate_patterns(outputs)
+        if not isinstance(result.get('resources', {}), dict):
+            raise ValueError('handler resources must be an object')
+        if '\x00' in result['script'] or len(result['script'].encode()) > limit:
+            raise ValueError('invalid generated script')
+        result['_execution'] = execution
+        return result, bound
 
     def review_request(self, application, version, author_session, _setup_flow_id=None):
         """Return frozen source material and instructions for an external fresh reviewer."""
@@ -349,7 +330,7 @@ class ApplicationService:
                     'request': ['interface_version', 'input_path', 'input_dir', 'input_name',
                         'remote_dir', 'scheduler', 'parameters', 'staging_dir'],
                     'result': ['script', 'input_files', 'outputs', 'resources (optional)'],
-                    'execution': 'JSON stdin/stdout; Python -I -B; single input or task directory per run.',
+                    'execution': 'JSON stdin/stdout; isolated Python -I -S -B by default; selected read-only inputs; writable staging; no network or subprocesses.',
                     'constraints': 'Generate only. No SSH, rsync, bsub/sbatch, input mutation, '
                         'batch scanning or background processes. Preserve generation branches and defaults.',
                     'scope': 'Compare original generation logic against handler script output, input selection '
@@ -426,7 +407,11 @@ class ApplicationService:
                 settings[cluster] = digest(asdict(self.jobs.clusters[cluster]))
             if _setup_expected_clusters is not None and settings != _setup_expected_clusters:
                 raise ApplicationError('application_cluster_changed', 'Cluster changed during setup confirmation; review current settings.')
-            record.update(status='active', confirmation_note=confirmation_note, confirmed_at=now(), cluster_settings=settings)
+            try:
+                pinned_dependencies = self.runner.dependencies(record['manifest'])
+            except RunnerError as exc:
+                raise ApplicationError(exc.code, str(exc), **exc.details) from exc
+            record.update(runner_dependencies=pinned_dependencies, status='active', confirmation_note=confirmation_note, confirmed_at=now(), cluster_settings=settings)
             self.atomic(path / 'record.json', record)
             index = self.read_index(); index[application]['active'] = version
             index[application].setdefault('bindings', {}).update({c: version for c in record['manifest']['clusters']})
@@ -456,12 +441,12 @@ class ApplicationService:
             remote = target.work_root.rstrip('/') + '/' + run_id
             request = {'input_path': str(local), 'input_dir': str(directory), 'input_name': local.name if local.is_file() else None,
                        'remote_dir': remote, 'scheduler': target.scheduler, 'parameters': parameters or {}}
-            result, bindings = self.execute(record, path, request)
+            result, bindings = self.execute(record, path, request, target.input_exclude)
             script = 'hpc-mcp-job.sh'
             if any(p == script for p in result['input_files']): raise ValueError('handler selected generated script as input')
             response = self.jobs.job_prepare(cluster, str(directory), script, result['outputs'], 'filtered',
                 project_root=str(project), input_files=result['input_files'], generated_script=result['script'],
-                generation_context={'mode': 'application-handler-v1', 'spec': {'resources': result.get('resources', {})}},
+                generation_context={'mode': 'application-handler-v1', 'spec': {'resources': result.get('resources', {})}, 'runner': result['_execution']},
                 template_context={'application_plugin': {'application': application, 'version': record['version'],
                     'review_token': record['review_token'], 'parameters': bindings, 'request': request,
                     'root': str(self.root), 'cluster_settings': asdict(target)}},
@@ -550,7 +535,7 @@ class ApplicationService:
                 input_path=str(Path(directory) / plugin['request']['input_name']) if plugin['request']['input_name'] else directory,
                 remote_dir=self.jobs.clusters[original['cluster']].work_root.rstrip('/') + '/' + run_id,
                 parameters=plugin['parameters'])
-            rendered, bindings = self.execute(record, path, request)
+            rendered, bindings = self.execute(record, path, request, self.jobs.clusters[original['cluster']].input_exclude)
             if rendered['outputs'] != original['outputs']:
                 raise ValueError('derived handler changed output rules; create a reviewed new plan')
             # Include explicit dependency handoff files, not only the original handler input selection.
@@ -560,7 +545,7 @@ class ApplicationService:
                 'filtered', original.get('output_exclude'), [], input_files=inputs,
                 generated_script=rendered['script'], template_context=context,
                 application_context=original.get('application'),
-                generation_context={'mode': 'application-handler-v1', 'spec': {'resources': rendered.get('resources', {})}},
+                generation_context={'mode': 'application-handler-v1', 'spec': {'resources': rendered.get('resources', {})}, 'runner': rendered['_execution']},
                 prepared_run_id=run_id, trusted_handler=True)
 
     def validate(self, run_id):

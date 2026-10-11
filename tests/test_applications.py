@@ -79,7 +79,7 @@ class ApplicationTests(unittest.TestCase):
         bundle=self.bundle_for()
         (bundle/'cases.json').unlink(missing_ok=True)
         shutil.rmtree(bundle/'references',ignore_errors=True)
-        with patch('hpc_mcp.applications.subprocess.Popen') as execute:
+        with patch('hpc_mcp.handler_runner.subprocess.Popen') as execute:
             record=self.apps.install(str(bundle))['application']
             self.review(record)
             self.apps.activate('gaussian',1,record['review_token'],'Source and handler reviewed; user confirmed.')
@@ -331,6 +331,15 @@ class ApplicationTests(unittest.TestCase):
         self.apps.remove('gaussian',False)
         with self.assertRaisesRegex(ValueError,'abandoned'):self.jobs.job_submit(run['run_id'])
         self.assertFalse((self.fixture.root/'submissions').exists())
+
+
+    def test_runner_orphan_snapshot_cleanup_stays_inside_application_state(self):
+        orphan=self.apps.root/'.run-interrupted'
+        orphan.mkdir(parents=True);(orphan/'input').write_text('interrupted snapshot')
+        preview=self.apps.cleanup(0)
+        self.assertEqual(preview['paths'],[str(orphan)]);self.assertTrue(orphan.exists())
+        self.apps.cleanup(0,False)
+        self.assertFalse(orphan.exists());self.assertTrue(self.card.exists())
 
 
 def load_handler(path):

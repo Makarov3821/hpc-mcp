@@ -17,6 +17,11 @@ def main():
     parser.add_argument("--state-dir", default=os.environ.get("HPC_MCP_STATE", ".hpc-mcp"))
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
+    runner_status = sub.add_parser('handler-runner-status')
+    runner_status.add_argument('--probe', action=argparse.BooleanOptionalAction, default=True)
+    runner_configure = sub.add_parser('handler-runner-configure')
+    runner_configure.add_argument('--settings-file', required=True)
+    runner_configure.add_argument('--confirmation-note', required=True)
     workflow_plan = sub.add_parser('workflow-plan')
     workflow_plan.add_argument('name')
     workflow_plan.add_argument('run_ids', nargs='+')
@@ -279,6 +284,13 @@ def main():
             return
         if args.action in legacy_actions:
             raise ValueError('legacy application profile requires migration; use application-install/review-request/review-submit/activate/prepare')
+        if args.action.startswith('handler-runner-'):
+            from .handler_runner import HandlerRunner
+            runner = HandlerRunner(args.state_dir)
+            data = runner.describe(args.probe) if args.action == 'handler-runner-status' else runner.configure(
+                json.loads(Path(args.settings_file).read_text()), args.confirmation_note)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action.startswith('application-') or args.action == 'gaussian-prepare':
             from .applications import ApplicationService
             from .jobs import JobService

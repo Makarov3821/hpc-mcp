@@ -27,6 +27,7 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 ├── repo/                 # Git checkout；专用虚拟环境为 repo/.venv/
 ├── clusters.toml         # 集群连接配置
 └── state/                # 历史、输入快照、监控记录
+    ├── handler-runner.json # 可选执行器配置；默认 isolated
     ├── onboarding/      # 接入／适配流程的受管工作区
     ├── applications/    # 注册 handler、manifest、来源与版本证据
     └── profiles/*.json   # 旧配置，仅供迁移时读取
@@ -38,7 +39,7 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 
 输入快照可能包含大型 checkpoint，应按需要设置输入容量与保留策略。没有声明 project_root 的旧式任务，其输出也可能保存在 state 中；项目模式不额外在 state 留一份已归位输出。
 
-本地需要 Python 3.11+、Git、OpenSSH 和 rsync；当前完整协议验收环境为 Linux。远程需要 Bash、rsync、sha256sum 以及 LSF／Slurm 命令。macOS 安装及运行兼容性需单独验收，Windows 原生运行尚未支持。
+本地需要 Python 3.11+、Git、OpenSSH 和 rsync。注册 handler 默认隔离执行，需要 Linux、bubblewrap 和 libseccomp；远程需要 Bash、rsync、sha256sum 以及 LSF／Slurm 命令。非 Linux 环境默认不能执行 handler，可信兼容模式须用户明确接受扩大的宿主权限，Windows 原生运行尚未支持。详见 [执行器权限与配置](docs/HANDLER_RUNNER.md)。
 
 ```bash
 python3 --version
@@ -80,7 +81,10 @@ python3 -m venv .venv
 export HPC_MCP_CONFIG="$HPC_MCP_HOME/clusters.toml"
 export HPC_MCP_STATE="$HPC_MCP_HOME/state"
 .venv/bin/hpc-mcp --config "$HPC_MCP_CONFIG" --state-dir "$HPC_MCP_STATE" --help
+.venv/bin/hpc-mcp --state-dir "$HPC_MCP_STATE" handler-runner-status
 ```
+
+确认执行器返回 `available: true`。缺失依赖或宿主禁止 namespace 时报告诊断，按用户授权安装系统依赖／调整运行环境；不要自行切换 trusted。此检查不执行应用源码或远程作业。
 
 HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也可将来源改为 `git@github.com:Makarov3821/hpc-mcp.git`，目标仍是同一个 repo 目录。GitHub 与计算集群的 SSH 身份分别管理。
 

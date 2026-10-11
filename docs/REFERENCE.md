@@ -19,6 +19,10 @@ setup_flow 与计算 workflow 分开，资料位于 state/onboarding/<flow_id>/w
 
 CLI 为 setup-flow-create/get/list/events/resume/step/confirm/close/cleanup；create --request-key 必填，close/cleanup --revision 必填，close 使用 --outcome 与可选 --artifacts-file，cleanup --apply 才删除。分配／读取／放弃无需 clusters.toml，接入确认和应用安装依赖明确的集群配置。step 使用 --action／--payload-file，confirm 使用 token 与 --note。
 
+## 本地 handler runner
+
+`handler_runner_status(probe=true)` 读取配置、权限和实际隔离能力；`handler_runner_configure(settings,confirmation_note)` 完整替换配置，要求用户确认。默认 isolated，仅 Linux bubblewrap+seccomp；不可用不会静默降级。trusted 显示宿主文件／网络权限。配置项、范围、依赖固定及 CLI 见 [执行器说明](HANDLER_RUNNER.md)；settings_get 返回相同配置，prepare／依赖派生保存执行证据。
+
 ## 集群引导与应用插件
 
 首次启动无应用处理方法；新接入使用 setup_flow 业务流程，cluster_probe/configure 保留只读检查／手动配置兼容入口，settings_get 提供参数。script_inspect 只分析用户来源，持久报告可用 onboarding_report 读取；软件发现最多 module avail，不搜索磁盘。profile_get/list 仅保留旧配置历史，旧 profile 写入、准备和验证工具已撤出 MCP。

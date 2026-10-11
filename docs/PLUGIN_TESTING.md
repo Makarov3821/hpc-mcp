@@ -28,3 +28,7 @@
 ## Phase 9B 业务门禁
 
 新应用使用 setup_flow_step 的 source/install/review_request/review_submit 和 setup_flow_confirm；原脚本归档后不可替换，revise 必须安装新版本。验证普通受管安装／审阅／激活被拒绝、活动流程引用阻止卸载、过期探测和变化配置阻止确认。中断安装／报告提交后恢复不得产生重复版本或报告。实际客户端独立 reviewer 与计算节点验证仍需真机检查。
+
+## Phase 10A 隔离验收
+
+离线套件需 Linux bubblewrap、libseccomp 与可用 namespace；真实边界测试不 mock 隔离后端。验证只读输入／插件、其他任务与模拟凭据不可读、环境不继承、TCP／Unix socket 和 fork 禁止、内存／总暂存容量／时间／输出限制、符号链接与特殊文件拒绝、依赖变更拒绝、成功／失败副本清理。能力不可用不得运行 handler 或静默降级。trusted 须显式确认并显示权限扩大；SDK stdio 验证工具发现和拒绝无确认配置。原 qg16／qvasp 字节回归及依赖派生同时验证生成行为保持。真机安装先调用 handler_runner_status；远程科学程序仍需另行验证。
