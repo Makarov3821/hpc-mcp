@@ -43,6 +43,10 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "User confirmation through setup_flow_confirm (or legacy unmanaged application_activate) is separate from real compute-node validation. "
         "Call handler_runner_status during installation; isolation is required by default. Never silently configure trusted mode when unavailable; explain host access and obtain explicit user permission. "
         "Use registered application handlers for daily prepare; job_submit is separate. Never execute original submission wrappers. "
+        "For full task orchestration, approve auto_submit/auto_sync in job_submission_plan, then explicitly "
+        "job_lifecycle_start and monitor_start. job_lifecycle_get separates scheduler, application and sync "
+        "results and gives a pending action. No criterion means unverified; failures preserve data. "
+        "Resume only inspected failed steps; never resubmit a confirmed job. "
         "Preview application_remove before deleting; preserve user computation data and history."))
     templates = TemplateService(jobs)
     updates = UpdateService(jobs.history.root)
@@ -53,6 +57,46 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     accounting = AccountingService(jobs)
     from .applications import ApplicationService, ApplicationError
     applications = ApplicationService(jobs)
+    from .lifecycle import LifecycleService
+    lifecycles = LifecycleService(jobs)
+
+    @server.tool()
+    def job_lifecycle_start(run_id: str) -> dict[str, Any]:
+        """Explicitly enable durable submit/track/check/return/cleanup for an approved run.
+
+        Requires auto_sync approval and auto_submit for unsubmitted runs. Does not start the
+        coordinator or perform network actions. No criterion means unverified; failures retain data.
+        """
+        return job_call(lifecycles.start, run_id)
+
+    @server.tool()
+    def job_lifecycle_get(run_id: str) -> dict[str, Any]:
+        """Read persisted progress, separate scheduler/application/sync results and pending action."""
+        return lifecycles.get(run_id)
+
+    @server.tool()
+    def job_lifecycle_list(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """List enrolled task lifecycles without submitting or querying the cluster."""
+        return lifecycles.list(limit, offset)
+
+    @server.tool()
+    def job_lifecycle_pause(run_id: str) -> dict[str, Any]:
+        """Pause future lifecycle and monitoring actions; running jobs/workers continue."""
+        return lifecycles.pause(run_id)
+
+    @server.tool()
+    def job_lifecycle_resume(run_id: str) -> dict[str, Any]:
+        """After inspection, resume only unfinished steps under the current exact approval.
+
+        Never resubmits a confirmed job. Changed authorization needs an approved new plan first.
+        Existing sync workers are adopted and verified local outputs are reused.
+        """
+        return job_call(lifecycles.start, run_id, True)
+
+    @server.tool()
+    def job_lifecycle_tick(run_id: str) -> dict[str, Any]:
+        """Run one enabled lifecycle step. Monitor/coordinator handles bounded queries and sync."""
+        return job_call(lifecycles.tick, run_id)
 
     def job_call(method, *args):
         from .submission import SubmissionError
@@ -245,7 +289,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
 
     @server.tool()
     def workflow_plan(name: str, run_ids: list[str], dependencies: list[dict] | None = None,
-                      limits: dict | None = None) -> dict[str, Any]:
+                      limits: dict | None = None, automation: dict | None = None) -> dict[str, Any]:
         """Claim 1..500 prepared independent runs into a disabled, reviewable submission workflow.
 
         limits from settings_get: max_in_flight (includes pending/suspended/unknown), submission rate,
@@ -254,7 +298,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         files: {source,target} relative paths; cannot overwrite child inputs. Cycles rejected.
         External parents must be submitted. Claims block direct job_submit; pause never bypasses dependencies.
         """
-        return workflows.plan(name, run_ids, dependencies, limits)
+        return workflows.plan(name, run_ids, dependencies, limits, automation)
 
     @server.tool()
     def workflow_review(workflow_id: str) -> dict[str, Any]:
@@ -491,6 +535,13 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                         "cleanup_policy": cleanup_from(None), "reset": False},
                     "enabled_by_default": False, "runtime_settings": monitor.runtime().get("settings")},
                 "handler_runner": applications.runner.describe(),
+                "lifecycle": {"enabled_by_default": False,
+                    "start": "job_lifecycle_start", "status": "job_lifecycle_get",
+                    "resume": "job_lifecycle_resume", "coordinator": "monitor_start",
+                    "max_submissions_per_cycle": 1,
+                    "max_steps_per_cycle": "monitor.max_jobs_per_cycle",
+                    "validation_log_limit_bytes": 2097152,
+                    "cleanup_requires": "scheduler succeeded, application passed, verified retained outputs"},
                 "script_resources": asdict(Resources()),
                 "script_execution": {"launcher": {"kind": "srun", "arguments": []},
                     "container": {"runtime": "apptainer", "image": "/remote/trusted.sif", "binds": [], "gpu": None},

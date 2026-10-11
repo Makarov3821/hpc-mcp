@@ -13,6 +13,7 @@ from .jobs import JobService
 from .monitor import MonitorService, settings_from, state_lock
 from .monitor_engine import MonitorEngine
 from .workflow import WorkflowService
+from .lifecycle import LifecycleService
 from dataclasses import replace
 
 
@@ -42,7 +43,9 @@ def main():
             settings = settings_from(runtime['settings'])
             engine = MonitorEngine(service, settings, stopping=lambda: stopped[0])
             workflows = WorkflowService(service.jobs, stopping=lambda: stopped[0] or service.runtime().get('stop_requested'))
+            lifecycles = LifecycleService(service.jobs, stopping=workflows.stopping)
             next_workflow_cycle = 0
+            next_lifecycle_cycle = 0
             service.runtime_update(instance_id, state='running', pid=os.getpid(), heartbeat_at=now())
             logger.info('Coordinator %s started; %d cluster configurations', instance_id, len(clusters))
             while not stopped[0]:
@@ -54,6 +57,21 @@ def main():
                     workflow_id = workflows.next_due() if time.monotonic() >= next_workflow_cycle else None
                     engine.settings = replace(settings, max_status_commands_per_cycle=max(1, settings.max_status_commands_per_cycle // 2)) if workflow_id else settings
                     summary = engine.tick()
+                    if time.monotonic() >= next_lifecycle_cycle and not lifecycles.stopping():
+                        summary['lifecycles'] = []
+                        submitted = False
+                        for run_id in lifecycles.due(settings.max_jobs_per_cycle):
+                            if lifecycles.stopping():
+                                break
+                            run = service.jobs.history.get(run_id)
+                            needs_submit = run['phase'] in ('prepared', 'uploading', 'upload_failed')
+                            if submitted and needs_submit:
+                                continue
+                            result = lifecycles.tick(run_id, settings.poll_interval_seconds)
+                            summary['lifecycles'].append({'run_id': run_id,
+                                'stage': result['lifecycle']['stage']})
+                            submitted = submitted or needs_submit
+                        next_lifecycle_cycle = time.monotonic() + settings.poll_interval_seconds
                     if workflow_id and not workflows.stopping():
                         remaining = settings.max_status_commands_per_cycle - summary['status_commands']
                         if remaining > 0:

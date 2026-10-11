@@ -95,4 +95,6 @@ application_update 与 install 使用相同入口，创建新版本，不隐式�
 
 ## 提交授权
 
+需要持久计算流程时，任务授权中明确包含自动提交／回传权限，再显式 job_lifecycle_start 和 monitor_start。生命周期只读取已归位、校验过的注册日志判据；无判据为 unverified，失败／未证明成功保留数据，通过后才按批准策略自动清理。状态与断开恢复见 [LIFECYCLE.md](LIFECYCLE.md)。
+
 应用激活只允许使用生成器，不批准计算任务。prepare 后统一通过 job_submission_plan／job_authorize 审阅实际脚本、输入哈希、目标和输出策略，再 job_submit；template_run 也不能绕过。自动回传／清理必须在任务计划中明确许可。依赖派生的新脚本／快照先 workflow_review 并确认，再放行。参见 [任务执行授权](SUBMISSION_AUTHORIZATION.md)。

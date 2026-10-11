@@ -173,13 +173,41 @@ class MonitorEngine:
             'output_dir': run.get('output_dir') if auto_sync else None, 'synced': auto_sync}) if entry['stage'] != 'complete' else None
         policy = entry['policy']['cleanup_policy']
         needs_cleanup = policy['storage_categories'] or policy['sync_cache_age_seconds'] is not None
+        if entry['policy'].get('lifecycle'):
+            try:
+                from .applications import ApplicationService
+                result = (ApplicationService(self.jobs).validate(run['run_id'], local_only=True)
+                          if run.get('template', {}).get('application_plugin') else
+                          {'status': 'unverified', 'reason': 'No application criterion registered.'})
+                entry = self.service.update(entry, application_result=result,
+                    retained_outputs_verified=verified_outputs(run, entry['policy']['sync_options']))
+                if entry is None:
+                    return
+                if result['status'] in ('pending', 'failed') or run['state'] != 'succeeded':
+                    self.service.update(entry, self.notification(entry, 'result_needs_attention', {
+                        'scheduler_state': run['state'], 'application_result': result,
+                        'output_dir': run.get('output_dir')}), stage='needs_attention',
+                        next_check_at=None, failed_step='result_check',
+                        last_error='Result did not pass; diagnostics and data retained.')
+                    return
+                if result['status'] != 'passed':
+                    needs_cleanup = False
+                    self.service.update(entry, cleanup_deferred='Application result is unverified.')
+                notice = self.notification(entry, 'complete', {
+                    'scheduler_state': run['state'], 'application_result': result,
+                    'output_dir': run.get('output_dir'), 'synced': auto_sync,
+                    'cleanup_deferred': result['status'] != 'passed'}) if entry['stage'] != 'complete' else None
+            except (OSError, ValueError) as error:
+                self.service.update(entry, stage='needs_attention', next_check_at=None,
+                    last_error=str(error)[:4000], failed_step='validation')
+                return
         try:
             cleanup = self.cleanup(entry) if needs_cleanup and run.get('sync_state') == 'complete' else {}
             self.service.update(entry, notice, stage='complete', completed_at=entry.get('completed_at') or self.clock(), last_error=None, last_cleanup=cleanup,
                 next_check_at=self.clock() + self.settings.cleanup_interval_seconds if needs_cleanup else None)
         except (OSError, ValueError) as error:
             self.service.update(entry, self.notification(entry, 'cleanup_blocked', {'error': str(error)[:4000]}),
-                stage='needs_attention', last_error=str(error)[:4000])
+                stage='needs_attention', failed_step='cleanup', last_error=str(error)[:4000])
 
     def tick(self):
         if self.stopping() or self.service.runtime().get('stop_requested'):

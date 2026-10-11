@@ -103,10 +103,12 @@ class WorkflowService:
             'stages': {stage: sum(t['stage'] == stage for t in v['tasks'].values())
                        for stage in sorted({t['stage'] for t in v['tasks'].values()})}} for v in values]}
 
-    def plan(self, name, run_ids, dependencies=None, limits=None):
-        from .submission import build
+    def plan(self, name, run_ids, dependencies=None, limits=None, automation=None):
+        from .submission import build, automation as permission_policy
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise ValueError('workflow name must be nonempty and at most 100 characters')
+        if automation is not None and not isinstance(automation, dict):
+            raise ValueError('automation must be a per-run permission object')
         if (not isinstance(run_ids, list) or not 1 <= len(run_ids) <= 500
                 or any(not isinstance(r, str) for r in run_ids) or len(set(run_ids)) != len(run_ids)):
             raise ValueError('run_ids must contain 1..500 unique prepared runs')
@@ -175,9 +177,12 @@ class WorkflowService:
                 downloads.setdefault(edge['parent_run_id'], set()).update(names)
         def permissions(rid):
             run = self.jobs.history.get(rid)
-            return {'auto_submit': rid in runs, 'extra_sync': [dict(mode='filtered', includes=sorted(downloads[rid]),
-                stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None)]
-                if downloads.get(rid) else []}
+            values = permission_policy(self.jobs, run, automation) if rid in runs else {}
+            extra = list(values.get('extra_sync', []))
+            if downloads.get(rid):
+                extra.append(dict(mode='filtered', includes=sorted(downloads[rid]),
+                    stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None))
+            return dict(values, auto_submit=rid in runs, extra_sync=extra)
         frozen = {rid: build(self.jobs, run, permissions(rid)) for rid, run in runs.items()}
         external = {rid: build(self.jobs, self.jobs.history.get(rid), permissions(rid))
                     for rid in downloads if rid not in runs and downloads[rid]}
@@ -208,7 +213,7 @@ class WorkflowService:
 
     def review(self, workflow_id):
         """Pause and freeze current concrete execution runs; never inherit approval for new inputs."""
-        from .submission import build
+        from .submission import build, options_from, sync_policy
         with state_lock(self.jobs.history, 'workflow-dispatch.lock'):
             value = self.get(workflow_id)['workflow']
             self._control(workflow_id, enabled=False)
@@ -227,8 +232,14 @@ class WorkflowService:
                     permissions = dict(previous or {}, auto_submit=automatic)
                     run = self.jobs.history.get(rid)
                     if downloads.get(rid):
-                        permissions['extra_sync'] = [dict(mode='filtered', includes=sorted(downloads[rid]),
-                            stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None)]
+                        extra = dict(mode='filtered', includes=sorted(downloads[rid]),
+                            stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None)
+                        extra = options_from(sync_policy(self.jobs, run, extra))
+                        # Preserve explicitly approved additional scopes across review.
+                        scopes = list(permissions.get('extra_sync', []))
+                        if extra not in scopes:
+                            scopes.append(extra)
+                        permissions['extra_sync'] = scopes
                     return permissions
                 frozen = {}
                 for task_id, task in value['tasks'].items():

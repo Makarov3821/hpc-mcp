@@ -212,6 +212,8 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 ## 5. 验收 MCP 工具与作业流程
 
+需要 agent 退出后仍能推进完整任务时，先在 job_submission_plan 中明确批准 auto_submit／auto_sync 及回传、清理范围，再 job_authorize、job_lifecycle_start、monitor_start。用 job_lifecycle_get 读取持久进度和 pending_action；遇到 needs_attention 检查 failed_step 后 job_lifecycle_resume，已确认作业不重交。调度状态、应用判据和同步结果分别返回；无判据为 unverified，失败保留诊断数据，自动清理只在调度成功、判据通过且输出校验后执行。详见 [计算生命周期与恢复](docs/LIFECYCLE.md)。
+
 每个新会话先调用 `update_check`，若 `update_available=true`，向用户提示上游提交并用 `update_plan` 获取更新命令；网络失败代表未知，不应说已是最新。然后从客户端调用 `settings_get`、`cluster_list`、`cluster_check`、`cluster_info`。`settings_get` 暴露完整设置模板、配置路径和状态路径；`cluster_configure` 可持久化更新集群，立即作用于当前服务。
 
 用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：

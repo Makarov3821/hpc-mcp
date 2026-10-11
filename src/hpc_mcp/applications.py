@@ -549,7 +549,7 @@ class ApplicationService:
                 generation_context={'mode': 'application-handler-v1', 'spec': {'resources': rendered.get('resources', {})}, 'runner': rendered['_execution']},
                 prepared_run_id=run_id, trusted_handler=True)
 
-    def validate(self, run_id):
+    def validate(self, run_id, local_only=False):
         run = self.jobs.history.get(run_id)
         plugin = run.get('template', {}).get('application_plugin')
         if not plugin: raise ValueError('run is not prepared by an application plugin')
@@ -558,15 +558,20 @@ class ApplicationService:
             rules = record['manifest'].get('validation')
         if rules is None:
             return {'ok': True, 'status': 'unverified', 'reason': 'No application result criterion registered.'}
-        if self.jobs.job_status(run_id)['run'].get('state') not in ('succeeded', 'failed', 'cancelled'):
+        observed = run if local_only else self.jobs.job_status(run_id)['run']
+        if observed.get('state') not in ('succeeded', 'failed', 'cancelled'):
             return {'ok': True, 'status': 'pending'}
         log = rules['log'].replace('{input_stem}', Path(plugin['request']['input_name'] or '').stem)
         relative_path(log)
-        synced = self.jobs.job_sync(run_id, mode='filtered', includes=[log], stable_only=True,
-            max_file_bytes=2097152, max_total_bytes=2097152)
-        if not synced.get('ok') or not synced.get('final'):
-            return {'ok': False, 'status': 'pending', 'sync': synced}
-        run = synced['run']; item = next((i for i in run['output_manifest'] if i['path'] == log), None)
+        if not local_only:
+            synced = self.jobs.job_sync(run_id, mode='filtered', includes=[log], stable_only=True,
+                max_file_bytes=2097152, max_total_bytes=2097152)
+            if not synced.get('ok') or not synced.get('final'):
+                return {'ok': False, 'status': 'pending', 'sync': synced}
+            run = synced['run']
+        elif run.get('sync_state') != 'complete':
+            return {'ok': True, 'status': 'pending', 'reason': 'Final local outputs unavailable.'}
+        item = next((i for i in run.get('output_manifest', []) if i['path'] == log), None)
         if not item: return {'ok': True, 'status': 'pending', 'reason': 'Application log missing.'}
         local = Path(run['output_dir']) / log
         if local.is_symlink() or any(p.is_symlink() for p in local.parents) or not local.is_file():

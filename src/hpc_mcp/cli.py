@@ -27,6 +27,7 @@ def main():
     workflow_plan.add_argument('run_ids', nargs='+')
     workflow_plan.add_argument('--dependencies-file', help='JSON list of dependency edges')
     workflow_plan.add_argument('--limits', default='{}', help='JSON concurrency and rate settings')
+    workflow_plan.add_argument('--automation-file', help='JSON per-task sync and cleanup permissions')
     workflow_start = sub.add_parser('workflow-start')
     workflow_start.add_argument('workflow_id')
     workflow_start.add_argument('review_token')
@@ -266,10 +267,30 @@ def main():
     flow_confirm = sub.add_parser('setup-flow-confirm')
     flow_confirm.add_argument('flow_id'); flow_confirm.add_argument('confirmation_token')
     flow_confirm.add_argument('--revision', required=True, type=int); flow_confirm.add_argument('--note', required=True)
+    for action in ('lifecycle-start', 'lifecycle-get', 'lifecycle-pause',
+                   'lifecycle-resume', 'lifecycle-tick'):
+        sub.add_parser(action).add_argument('run_id')
+    lifecycle_list = sub.add_parser('lifecycle-list')
+    lifecycle_list.add_argument('--limit', type=int, default=50)
+    lifecycle_list.add_argument('--offset', type=int, default=0)
     args, unknown = parser.parse_known_args()
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action.startswith('lifecycle-'):
+            from .jobs import JobService
+            from .lifecycle import LifecycleService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            lifecycles = LifecycleService(JobService(clusters, args.state_dir, config_path=args.config))
+            action = args.action.removeprefix('lifecycle-')
+            if action == 'list':
+                data = lifecycles.list(args.limit, args.offset)
+            elif action == 'resume':
+                data = lifecycles.start(args.run_id, resume=True)
+            else:
+                data = getattr(lifecycles, action)(args.run_id)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action.startswith('setup-flow-'):
             from .jobs import JobService
             from .setup_workflows import SetupWorkflowService
@@ -364,7 +385,8 @@ def main():
             if args.action == 'workflow-plan':
                 data = workflows.plan(args.name, args.run_ids,
                     json.loads(Path(args.dependencies_file).read_text()) if args.dependencies_file else None,
-                    json.loads(args.limits))
+                    json.loads(args.limits),
+                    json.loads(Path(args.automation_file).read_text()) if args.automation_file else None)
             elif args.action == 'workflow-start':
                 data = workflows.start(args.workflow_id, args.review_token, args.confirmation_note)
             elif args.action == 'workflow-review':

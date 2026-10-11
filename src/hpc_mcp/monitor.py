@@ -203,7 +203,8 @@ class MonitorService:
                     (key, now(), entry['run_id'], kind, json.dumps(detail)))
         return current
 
-    def watch(self, run_ids, auto_sync=True, sync_options=None, cleanup_policy=None, reset=False):
+    def watch(self, run_ids, auto_sync=True, sync_options=None, cleanup_policy=None, reset=False,
+              _lifecycle=False):
         if not isinstance(run_ids, list) or not run_ids or len(run_ids) > 500 or any(not isinstance(r, str) for r in run_ids):
             raise ValueError('run_ids must contain 1..500 registered run IDs')
         if type(auto_sync) is not bool or type(reset) is not bool:
@@ -218,7 +219,8 @@ class MonitorService:
             proposed = {'auto_sync': auto_sync, 'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup}
             token = monitor_guard(self.jobs, run, proposed) if auto_sync or cleanup != cleanup_from(None) else None
             plans.append((run_id, {'auto_sync': auto_sync,
-                'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup, 'authorization_token': token}))
+                'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup,
+                'authorization_token': token, 'lifecycle': _lifecycle or bool(run.get('lifecycle'))}))
         result = []
         with state_lock(self.history, 'monitor-control.lock'), self.history.connect() as db:
             db.execute('BEGIN IMMEDIATE')

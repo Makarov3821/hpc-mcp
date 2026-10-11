@@ -118,6 +118,21 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 
 仅无未解析项、单调度器、单静态命令并有明确程序输出时返回通过生成器验证的模板草案；requires_review 始终 true，不证明 Shell 语义完全等价。agent 核对初始化顺序、资源、所有输入、输出和路径后，才能将 draft 作为 definition 传给 template_import；报告本身不是 definition。不改写原脚本，复杂场景仍可用 job_prepare 保存原文。CLI：`script-inspect FILE [--cluster NAME] [--max-bytes N]`。示例见 `examples/inspection/`。
 
+## 计算生命周期与恢复
+
+以下工具复用提交授权、monitor 和同步 worker。默认不启用，状态在 run.lifecycle 与事件中持久保存；查看不连接集群。完整流程与恢复示例见 [LIFECYCLE.md](LIFECYCLE.md)。
+
+| MCP 工具 | 行为 |
+| --- | --- |
+| job_lifecycle_start(run_id) | 当前精确授权须包含 auto_sync；未提交任务还须 auto_submit。显式启用，不提交、不启动协调器。需要检查的失败不由重复 start 自动重试。 |
+| job_lifecycle_get(run_id) | 返回 lifecycle、scheduler、application_result、sync、cleanup、pending_action，分别表达调度、判据与归位。 |
+| job_lifecycle_list(limit=50, offset=0) | 分页读取已登记任务，limit 1..500。 |
+| job_lifecycle_pause(run_id) | 停止未来推进并停用本任务监控；已在运行的作业／worker 继续。 |
+| job_lifecycle_resume(run_id) | 检查失败并修正后，凭当前批准重试未完成步骤；不重交已确认的 job_id。 |
+| job_lifecycle_tick(run_id) | 推进一步；不替代 monitor 的有预算查询与同步。 |
+
+CLI 对应 lifecycle-start/get/list/pause/resume/tick。monitor_start 的协调器推进到期生命周期，最多每轮 max_jobs_per_cycle 项、一次独立提交；批量提交由 workflow 的限额控制。未注册判据为 unverified，失败／取消仍回传诊断但保留缓存与远程数据。注册标记通过且本地输出 SHA 校验后才按批准策略自动清理。参数／路径／授权变化须重新确认，派生快照仍独立确认；远程清理失败可只重试清理。
+
 ## 模板与固定计划
 
 模板为结构化 JSON 定义，包含必填 `scheduler`、非空 `outputs`，以及通用 `spec`。可选字段为 `parameters`、`script_name`、`input_files`、`input_exclude`、`output_exclude`、`max_input_bytes`。`parameters` 是名字到 `{type, default?, description?}` 的映射；支持 string、integer、boolean，没有 default 就是必填。`{{name}}` 全值占位保留参数类型，嵌入字符串时转为文本；只替换值、不替换键，不求值，不允许未知参数或未声明占位。资源整数应用全值占位，argv 和环境最终仍须是字符串。
@@ -337,7 +352,7 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 
 | MCP 工具 | 参数与动作 |
 | --- | --- |
-| workflow_plan | `name, run_ids, dependencies=null, limits=null`；名称 1..100 字符，1..500 个未提交 prepared run，至多 1000 条依赖；登记后禁止直接 job_submit。返回禁用计划与 review_token。 |
+| workflow_plan | `name, run_ids, dependencies=null, limits=null, automation=null`；名称 1..100 字符，1..500 个未提交 prepared run，至多 1000 条依赖；automation 冻结每项回传／清理权限，可批准 auto_sync 后显式启用生命周期；登记后禁止直接 job_submit。返回禁用计划与 review_token。 |
 | workflow_review | `workflow_id`；暂停并冻结当前具体执行快照，返回新 review_token，不授权；派生输入／配置变化后先审阅再确认。 |
 | workflow_start | `workflow_id, review_token, confirmation_note`；凭据须匹配固定计划，记录明确用户授权，note 1..4096 字符。仅启用，不立即提交或启动进程。 |
 | workflow_pause | `workflow_id`；停止后续放行，已预留的上传／提交可能完成；不取消作业、不停止同步、不释放登记。恢复用 workflow_start。 |

@@ -40,6 +40,8 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('job_sync',tools)
                         self.assertIn('job_submission_plan',tools)
                         self.assertIn('job_authorize',tools)
+                        for name in ('start', 'get', 'list', 'pause', 'resume', 'tick'):
+                            self.assertIn('job_lifecycle_' + name, tools)
                         self.assertIn('workflow_review',tools)
                         self.assertIn('workflow_plan',tools)
                         self.assertIn('setup_flow_create',tools)
@@ -87,6 +89,11 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(cleaned['flow']['state'],'cleaned');self.assertFalse(workspace.exists())
                         prepared=await call(client,'application_prepare',{'application':'gaussian','cluster':'lab','input_path':str(project/'water.gjf'),'project_root':str(project)})
                         run_id=prepared['run']['run_id']
+                        lifecycle=await call(client,'job_lifecycle_get',{'run_id':run_id})
+                        self.assertEqual(lifecycle['lifecycle']['stage'],'awaiting_authorization')
+                        self.assertEqual(lifecycle['application_result']['status'],'unverified')
+                        denied=await call(client,'job_lifecycle_start',{'run_id':run_id})
+                        self.assertEqual(denied['error'],'submission_authorization_required')
                         self.assertEqual(prepared['run']['phase'],'prepared')
                         self.assertEqual(prepared['plugin']['version'],1)
                         details=await call(client,'job_get',{'run_id':run_id})
