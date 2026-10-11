@@ -38,7 +38,7 @@ def main():
             if runtime.get('instance_id') != instance_id:
                 return
             clusters = {name: Cluster(**values) for name, values in runtime['clusters'].items()}
-            service = MonitorService(JobService(clusters, history.root))
+            service = MonitorService(JobService(clusters, history.root, config_path=runtime.get('config_path')))
             settings = settings_from(runtime['settings'])
             engine = MonitorEngine(service, settings, stopping=lambda: stopped[0])
             workflows = WorkflowService(service.jobs, stopping=lambda: stopped[0] or service.runtime().get('stop_requested'))

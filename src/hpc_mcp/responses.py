@@ -12,7 +12,7 @@ def preparation_receipt(result, compact=True):
          'script', 'outputs', 'profile') if key in run},
         'resources': run.get('generation', {}).get('spec', {}).get('resources', {}),
         'input_count': len(run['manifest']), 'input_bytes': sum(e['size'] for e in run['manifest']),
-        'details_tool': 'job_get', 'notes': result.get('notes', [])}
+        'details_tool': 'job_get', 'next_step': 'job_submission_plan, user confirmation, job_authorize, job_submit', 'notes': result.get('notes', [])}
     if run.get('template', {}).get('application_plugin'):
         receipt['plugin'] = {key: run['template']['application_plugin'][key] for key in
             ('application', 'version', 'review_token', 'parameters')}

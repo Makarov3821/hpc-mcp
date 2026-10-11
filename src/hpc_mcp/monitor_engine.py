@@ -23,6 +23,19 @@ class MonitorEngine:
 
     def permitted(self, entry):
         current = self.service.entry(entry['run_id'])
+        from .submission import monitor_guard, SubmissionError
+        from .monitor import cleanup_from
+        policy = entry['policy']
+        if policy['auto_sync'] or policy['cleanup_policy'] != cleanup_from(None):
+            try:
+                token = monitor_guard(self.jobs, self.jobs.history.get(entry['run_id']), policy)
+                if token != policy.get('authorization_token'):
+                    raise SubmissionError('monitor_authorization_required', 'Monitoring authorization changed; review and register the exact policy again.')
+            except ValueError as error:
+                self.service.update(entry, self.notification(entry, 'authorization_required', {'error': str(error)}),
+                    stage='needs_attention', last_error=str(error), next_check_at=None)
+                return False
+
         return (not self.stopping() and current['enabled'] and current['generation'] == entry['generation']
                 and not self.service.runtime().get('stop_requested'))
 

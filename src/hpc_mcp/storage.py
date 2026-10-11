@@ -103,6 +103,9 @@ def local_cleanup(jobs, run_id, categories=None, older_than_seconds=86400, dry_r
         raise ValueError("dry_run must be boolean")
     with jobs.history.lock(run_id):
         run = jobs.history.get(run_id)
+        if not dry_run:
+            from .submission import cleanup_guard
+            cleanup_guard(jobs, run, 'storage', older_than_seconds, categories)
         root = jobs.history.root / run_id
         if run["state"] not in TERMINAL or run.get("sync_state") != "complete":
             raise ValueError("storage cleanup requires a terminal run and complete sync")

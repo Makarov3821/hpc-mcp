@@ -32,3 +32,7 @@
 ## Phase 10A 隔离验收
 
 离线套件需 Linux bubblewrap、libseccomp 与可用 namespace；真实边界测试不 mock 隔离后端。验证只读输入／插件、其他任务与模拟凭据不可读、环境不继承、TCP／Unix socket 和 fork 禁止、内存／总暂存容量／时间／输出限制、符号链接与特殊文件拒绝、依赖变更拒绝、成功／失败副本清理。能力不可用不得运行 handler 或静默降级。trusted 须显式确认并显示权限扩大；SDK stdio 验证工具发现和拒绝无确认配置。原 qg16／qvasp 字节回归及依赖派生同时验证生成行为保持。真机安装先调用 handler_runner_status；远程科学程序仍需另行验证。
+
+## Phase 10B 授权验收
+
+普通脚本／template_run／注册 handler／workflow 都必须精确授权。覆盖未授权零上传、错 token／跨任务授权、完整配置／快照／目录／输出变更、上传中配置变化、撤销后只读恢复不重交、扩大同步／删除范围拒绝、排队 worker token 失效、后台配置重读、监控失效通知。依赖 handoff 生成新 run 后必须暂停，旧 token 不能放行；review 新哈希并确认后再提交。SDK modern／legacy 验证计划／确认工具、未确认提交报错、确认仅持久化且不远程执行。测试确认说明是模拟夹具，不能作为真实用户批准的证明。

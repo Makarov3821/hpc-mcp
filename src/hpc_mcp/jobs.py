@@ -50,13 +50,25 @@ def file_manifest(root: Path, hashes: bool = True) -> list[dict]:
 
 class JobService:
     def __init__(self, clusters: dict[str, Cluster], state_dir=".hpc-mcp", transport=None,
-                 transfer=None):
+                 transfer=None, config_path=None):
         self.clusters = clusters
+        self.config_path = Path(config_path).expanduser().resolve() if config_path else None
         self.history = History(state_dir)
         self.transport = transport if transport is not None else SSHTransport()
         self.transfer = transfer if transfer is not None else Transfer()
 
+    def refresh_clusters(self):
+        if self.config_path is not None:
+            if not self.config_path.exists() and not self.clusters:
+                return
+            from .config import load_config
+            current = load_config(self.config_path)
+            if self.clusters != current:
+                self.clusters.clear()
+                self.clusters.update(current)
+
     def _cluster(self, run: dict) -> Cluster:
+        self.refresh_clusters()
         name = run["cluster"]
         if name not in self.clusters:
             raise ValueError(f"cluster no longer configured: {name}")
@@ -84,6 +96,7 @@ class JobService:
                     application_context: dict | None = None,
                     generation_context: dict | None = None, prepared_run_id: str | None = None,
                     trusted_handler: bool = False) -> dict:
+        self.refresh_clusters()
         if cluster not in self.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         config = self.clusters[cluster]
@@ -205,7 +218,7 @@ class JobService:
                 "command": submit_command(config.scheduler, run_id, script, remote),
                 "notes": ["作业名覆盖为 run_id，工作目录指定为执行目录，调度输出写入固定日志。",
                           "脚本保持原样；绝对路径与程序内部输出位置需要用户自行核对。",
-                          "不执行输入脚本；prepare 只创建本地快照，submit 才上传和提交。"],
+                          "prepare 只创建快照；先 job_submission_plan 展示并由用户确认 job_authorize，再 submit 上传和提交。"],
             }
             if generated_script is not None:
                 run["generated_script"] = generated_script
@@ -231,6 +244,22 @@ class JobService:
         return {"ok": True, "run": self.history.get(run_id),
                 "events": self.history.events(run_id)}
 
+    def job_submission_plan(self, run_id: str, automation: dict | None = None) -> dict:
+        from .submission import plan_locked
+        with self.history.lock(run_id):
+            return plan_locked(self, self.history.get(run_id), automation)
+
+    def job_authorize(self, run_id: str, review_token: str, confirmation_note: str) -> dict:
+        from .submission import authorize_locked
+        with self.history.lock(run_id):
+            return authorize_locked(self, self.history.get(run_id), review_token, confirmation_note)
+
+    def job_revoke_authorization(self, run_id: str) -> dict:
+        with self.history.lock(run_id):
+            run = self.history.update(run_id, 'submission_authorization_revoked', submission_authorization=None)
+            return {'ok': True, 'run_id': run_id, 'phase': run['phase'],
+                    'notes': ['Stops future authorized actions; existing remote jobs are not cancelled.']}
+
     def job_submit(self, run_id: str, _workflow_token: str | None = None) -> dict:
         with self.history.lock(run_id):
             from .workflow import submission_guard
@@ -245,6 +274,12 @@ class JobService:
                         "already_processed": True}
             if run["phase"] in ("submitting", "submission_unknown"):
                 return self._recover(run, cluster)
+            from .submission import receipt, owner, SubmissionError
+            plan, authorization = receipt(self, run)
+            owned = owner(self.history, run_id)
+            if _workflow_token and (not plan['automation']['auto_submit'] or not owned or
+                    not authorization.get('workflow') or authorization['workflow'].get('workflow_id') != owned['workflow_id']):
+                raise SubmissionError('submission_workflow_owned', 'Workflow submission needs the exact confirmed automatic scope.')
             # Holding the OS lock proves any previous uploading process has exited.
             staged = Path(run["snapshot_dir"])
             if file_manifest(staged) != run["manifest"]:
@@ -267,6 +302,9 @@ class JobService:
                 f"sha256sum --check {prefix}-input.sha256 >/dev/null")
             if not verification.ok:
                 return self._failure(run_id, "upload_failed", verification)
+            # Recheck after upload: configuration/snapshot changes cannot reach the scheduler.
+            receipt(self, self.history.get(run_id))
+            submission_guard(self.history, run_id, _workflow_token)
             self.history.update(run_id, "submission_intent", phase="submitting")
             # Atomic remote lock prohibits retries even if the client loses the response.
             result = self.transport.run(cluster,
@@ -411,7 +449,7 @@ class JobService:
                  timeout: int | None = None, resume: bool | None = None,
                  max_file_bytes: int | None = None, max_total_bytes: int | None = None,
                  reserve_bytes: int | None = None, stable_only: bool = False,
-                 _operation_id: str | None = None) -> dict:
+                 _operation_id: str | None = None, _authorization_token: str | None = None) -> dict:
         from .sync_support import preview, positive
         if type(stable_only) is not bool or (resume is not None and type(resume) is not bool):
             raise ValueError("stable_only/resume must be boolean")
@@ -420,6 +458,12 @@ class JobService:
             if run["phase"] != "submitted":
                 raise ValueError("sync requires a confirmed submitted job")
             cluster = self._cluster(run)
+            from .submission import sync_guard
+            sync_guard(self, run, dict(mode=mode, includes=includes, excludes=excludes,
+                destination=destination, layout=layout, overwrite=overwrite, checksum=checksum,
+                compress=compress, timeout=timeout, resume=resume, max_file_bytes=max_file_bytes,
+                max_total_bytes=max_total_bytes, reserve_bytes=reserve_bytes, stable_only=stable_only),
+                _authorization_token)
             policy = replace(cluster,
                 output_mode=("filtered" if includes is not None else run.get("output_mode", "filtered"))
                 if mode is None else mode,
@@ -636,6 +680,9 @@ class JobService:
             raise ValueError("older_than_seconds must be nonnegative; dry_run must be boolean")
         with self.history.lock(run_id):
             run = self.history.get(run_id)
+            if not dry_run:
+                from .submission import cleanup_guard
+                cleanup_guard(self, run, 'cache', older_than_seconds)
             project = Path(run["project_root"]) if run.get("project_root") else None
             cache = project / ".hpc-mcp-sync" / run_id if project else \
                 self.history.root / run_id / "sync-attempts"
@@ -694,6 +741,9 @@ class JobService:
             run = self.history.get(run_id)
             if run.get("remote_removed"):
                 return {"ok": True, "already_removed": True, "run_id": run_id}
+            if not dry_run:
+                from .submission import cleanup_guard
+                cleanup_guard(self, run, 'remote')
             cluster = self._cluster(run)
             if run["phase"] != "submitted" or run.get("sync_state") != "complete":
                 raise ValueError("remote cleanup requires submitted run and complete selected-output sync")

@@ -26,7 +26,7 @@ class SyncStorageTests(unittest.TestCase):
     def submitted(self):
         run = self.jobs.job_prepare("lsf", str(self.source), "job.sh", ["results/***", "*.log", "*.chk"],
                                     project_root=str(self.project), input_files=["job.sh", "data.txt"])["run"]
-        self.assertTrue(self.jobs.job_submit(run["run_id"])["ok"])
+        self.assertTrue(test_jobs.authorized_submit(self.jobs, run["run_id"])["ok"])
         return run
 
     def test_preview_exact_rules_limits_and_no_result_download(self):
@@ -39,7 +39,7 @@ class SyncStorageTests(unittest.TestCase):
         self.assertEqual(result["files"][0]["path"], "odd|name.chk")
         self.assertEqual(result["bytes"], 5)
         self.assertFalse((self.project / ".hpc-mcp-sync").exists())
-        limited = self.jobs.job_sync(run["run_id"], includes=["*.chk"], max_file_bytes=2)
+        limited = test_jobs.authorized_sync(self.jobs, run["run_id"], includes=["*.chk"], max_file_bytes=2)
         self.assertFalse(limited["ok"])
         self.assertIn("max_file_bytes exceeded", limited["preview"]["blockers"])
         with patch("hpc_mcp.sync_support.shutil.disk_usage", return_value=shutil._ntuple_diskusage(100, 99, 1)):
@@ -60,18 +60,18 @@ class SyncStorageTests(unittest.TestCase):
                 return result
             return real(*args, **kwargs)
         with patch.object(self.jobs.transfer, "run", side_effect=lose_response):
-            self.assertFalse(self.jobs.job_sync(run["run_id"])["ok"])
-            result = self.jobs.job_sync(run["run_id"])
+            self.assertFalse(test_jobs.authorized_sync(self.jobs, run["run_id"])["ok"])
+            result = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertTrue(result["ok"])
         self.assertTrue(result["resumed"])
         self.assertEqual(attempts[0], attempts[1])
         self.assertFalse((self.project / ".hpc-mcp-sync").exists())
         # Different parameters never reuse previous bytes, even if files happen to match.
         self.jobs.transfer.fail_download = True
-        self.assertFalse(self.jobs.job_sync(run["run_id"], overwrite="merge")["ok"])
+        self.assertFalse(test_jobs.authorized_sync(self.jobs, run["run_id"], overwrite="merge")["ok"])
         prior = self.jobs.history.get(run["run_id"])["sync_options"]["staging_dir"]
         self.jobs.transfer.fail_download = False
-        changed = self.jobs.job_sync(run["run_id"], overwrite="merge", checksum=False)
+        changed = test_jobs.authorized_sync(self.jobs, run["run_id"], overwrite="merge", checksum=False)
         self.assertTrue(changed["ok"])
         self.assertFalse(changed["resumed"])
         self.assertNotEqual(changed["run"]["sync_options"]["staging_dir"], prior)
@@ -85,19 +85,19 @@ class SyncStorageTests(unittest.TestCase):
                 (Path(run["remote_dir"]) / "results/value.txt").write_text("newer changed value")
             return result
         with patch.object(self.jobs.transfer, "run", side_effect=mutate):
-            result = self.jobs.job_sync(run["run_id"])
+            result = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertFalse((self.source / "results/value.txt").exists())
         self.assertTrue(Path(result["run"]["output_dir"]).exists())
-        self.assertTrue(self.jobs.job_sync(run["run_id"])["ok"])
+        self.assertTrue(test_jobs.authorized_sync(self.jobs, run["run_id"])["ok"])
 
     def test_stable_only_rejects_running_and_failed_queries(self):
         run = self.submitted()
         bjobs = self.fixture.bin / "bjobs"
         bjobs.write_text("#!/bin/bash\nprintf '4242|RUN|0\\n'\n")
         with self.assertRaisesRegex(ValueError, "terminal"):
-            self.jobs.job_sync(run["run_id"], stable_only=True)
-        partial = self.jobs.job_sync(run["run_id"])
+            test_jobs.authorized_sync(self.jobs, run["run_id"], stable_only=True)
+        partial = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertTrue(partial["ok"])
         self.assertFalse(partial["final"])
 
@@ -114,7 +114,7 @@ class SyncStorageTests(unittest.TestCase):
         applied = self.jobs.input_cache_cleanup(older_than_seconds=0, max_cache_bytes=0, dry_run=False)
         self.assertEqual(applied["remaining_bytes"], 0)
         self.assertTrue(second.is_file())
-        self.assertTrue(self.jobs.job_submit(runs[1]["run_id"])["ok"])
+        self.assertTrue(test_jobs.authorized_submit(self.jobs, runs[1]["run_id"])["ok"])
 
     def test_corrupt_cache_rebuilt_and_symlink_cache_rejected(self):
         cache = InputCache(self.jobs.history)
@@ -134,17 +134,17 @@ class SyncStorageTests(unittest.TestCase):
     def test_local_cleanup_protects_latest_results_and_keeps_history(self):
         run = self.submitted()
         with self.assertRaisesRegex(ValueError, "complete"):
-            self.jobs.job_storage_cleanup(run["run_id"])
-        self.jobs.job_sync(run["run_id"])
+            test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"])
+        test_jobs.authorized_sync(self.jobs, run["run_id"])
         # Historical Gaussian snapshots remain eligible for explicit storage cleanup.
         original = self.jobs.history.root / run["run_id"] / "original-input"
         original.mkdir()
         (original / "card.gjf").write_text("historical input")
-        preview = self.jobs.job_storage_cleanup(run["run_id"], ["snapshot"], 0)
+        preview = test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["snapshot"], 0)
         self.assertTrue(Path(run["snapshot_dir"]).exists())
         self.assertTrue(original.is_dir())
         self.assertEqual(len(preview["candidates"]), 2)
-        self.jobs.job_storage_cleanup(run["run_id"], ["snapshot", "old_outputs"], 0, False)
+        test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["snapshot", "old_outputs"], 0, False)
         self.assertFalse(Path(run["snapshot_dir"]).exists())
         self.assertFalse(original.exists())
         self.assertTrue((self.source / "results/value.txt").is_file())
@@ -155,20 +155,20 @@ class SyncStorageTests(unittest.TestCase):
 
     def test_remote_cleanup_validates_results_receipt_and_scope(self):
         run = self.submitted()
-        self.jobs.job_sync(run["run_id"])
+        test_jobs.authorized_sync(self.jobs, run["run_id"])
         directory = Path(run["remote_dir"])
         marker = self.fixture.remote / "outside.txt"
         marker.write_text("keep")
-        preview = self.jobs.job_remote_cleanup(run["run_id"])
+        preview = test_jobs.authorized_cleanup(self.jobs, 'remote', run["run_id"])
         self.assertTrue(preview["ok"], preview)
         self.assertTrue(directory.exists())
         response = directory / ".hpc-mcp-response"
         original = response.read_bytes()
         response.write_text("other job")
-        self.assertFalse(self.jobs.job_remote_cleanup(run["run_id"], False)["ok"])
+        self.assertFalse(test_jobs.authorized_cleanup(self.jobs, 'remote', run["run_id"], False)["ok"])
         self.assertTrue(directory.exists())
         response.write_bytes(original)
-        self.assertTrue(self.jobs.job_remote_cleanup(run["run_id"], False)["ok"])
+        self.assertTrue(test_jobs.authorized_cleanup(self.jobs, 'remote', run["run_id"], False)["ok"])
         self.assertFalse(directory.exists())
         self.assertEqual(marker.read_text(), "keep")
         self.assertTrue(self.jobs.job_get(run["run_id"])["run"]["remote_removed"])
@@ -210,8 +210,8 @@ class SyncStorageTests(unittest.TestCase):
                 return CommandResult(23, stderr="partial checkpoint")
             return real(*args, **kwargs)
         with patch.object(self.jobs.transfer, "run", side_effect=partial):
-            self.assertFalse(self.jobs.job_sync(run["run_id"])["ok"])
-            result = self.jobs.job_sync(run["run_id"])
+            self.assertFalse(test_jobs.authorized_sync(self.jobs, run["run_id"])["ok"])
+            result = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["resumed"])
         self.assertGreater(result["run"]["sync_transfer_stats"]["reused_bytes"], 0)
@@ -220,20 +220,20 @@ class SyncStorageTests(unittest.TestCase):
 
     def test_expired_archives_and_old_outputs_preserve_latest(self):
         run = self.fixture.prepare()
-        self.jobs.job_submit(run["run_id"])
-        first = self.jobs.job_sync(run["run_id"])["run"]
-        latest = self.jobs.job_sync(run["run_id"])["run"]
-        candidates = self.jobs.job_storage_cleanup(run["run_id"], ["old_outputs"], 0)
+        test_jobs.authorized_submit(self.jobs, run["run_id"])
+        first = test_jobs.authorized_sync(self.jobs, run["run_id"])["run"]
+        latest = test_jobs.authorized_sync(self.jobs, run["run_id"])["run"]
+        candidates = test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["old_outputs"], 0)
         self.assertEqual([c["path"] for c in candidates["candidates"]], [first["output_dir"]])
-        self.jobs.job_storage_cleanup(run["run_id"], ["old_outputs"], 0, False)
+        test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["old_outputs"], 0, False)
         self.assertFalse(Path(first["output_dir"]).exists())
         self.assertTrue(Path(latest["output_dir"]).is_dir())
-        direct = self.jobs.job_sync(run["run_id"], layout="direct", overwrite="merge")["run"]
-        self.assertEqual(self.jobs.job_storage_cleanup(run["run_id"], ["old_outputs"], 0)["candidates"], [])
-        self.jobs.job_sync(run["run_id"], layout="direct", overwrite="replace")
-        archives = self.jobs.job_storage_cleanup(run["run_id"], ["sync_history"], 0)
+        direct = test_jobs.authorized_sync(self.jobs, run["run_id"], layout="direct", overwrite="merge")["run"]
+        self.assertEqual(test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["old_outputs"], 0)["candidates"], [])
+        test_jobs.authorized_sync(self.jobs, run["run_id"], layout="direct", overwrite="replace")
+        archives = test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["sync_history"], 0)
         self.assertTrue(archives["candidates"])
-        self.jobs.job_storage_cleanup(run["run_id"], ["sync_history"], 0, False)
+        test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["sync_history"], 0, False)
         self.assertTrue(Path(direct["output_dir"]).exists())
 
     def test_interrupted_operation_and_invalid_options_are_reported(self):
@@ -248,42 +248,36 @@ class SyncStorageTests(unittest.TestCase):
         with self.jobs.history.connect() as db:
             db.execute("INSERT INTO operations VALUES (?,?,?)", (value["operation_id"], run["run_id"], json.dumps(value)))
         self.assertEqual(self.jobs.job_sync_operation(value["operation_id"])["operation"]["state"], "interrupted")
-        # Value validation happens in the worker and is persisted without any SSH call.
-        result = self.jobs.job_sync_start(run["run_id"], {"resume": "invalid"})
-        operation_id = result["operation"]["operation_id"]
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            result = self.jobs.job_sync_operation(operation_id)["operation"]
-            if result["state"] not in ("running", "queued"):
-                break
-            time.sleep(0.1)
-        self.assertEqual(result["state"], "failed")
-        self.assertIn("boolean", result["error"])
+        # Invalid scope is rejected before registering a worker or making SSH calls.
+        with self.assertRaisesRegex(ValueError, 'boolean'):
+            self.jobs.job_sync_start(run['run_id'], {'resume':'invalid'})
+        with self.jobs.history.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0], 1)
 
     def test_cleanup_rejects_moved_run_directory_and_changed_local_outputs(self):
         run = self.submitted()
-        self.jobs.job_sync(run["run_id"])
+        test_jobs.authorized_sync(self.jobs, run["run_id"])
         file = self.source / "results/value.txt"
         file.write_text("modified local result")
         with self.assertRaisesRegex(ValueError, "changed"):
-            self.jobs.job_remote_cleanup(run["run_id"], False)
+            test_jobs.authorized_cleanup(self.jobs, 'remote', run["run_id"], False)
         self.assertTrue(Path(run["remote_dir"]).exists())
         root = self.jobs.history.root / run["run_id"]
         moved = self.project / "moved-run"
         root.rename(moved)
         root.symlink_to(moved, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink"):
-            self.jobs.job_storage_cleanup(run["run_id"], ["snapshot"], 0, False)
+            test_jobs.authorized_cleanup(self.jobs, 'storage', run["run_id"], ["snapshot"], 0, False)
         self.assertTrue((moved / "input").is_dir())
 
     def test_nonproject_snapshot_retry_preserves_target_and_partial_staging(self):
         run = self.fixture.prepare()
-        self.jobs.job_submit(run["run_id"])
+        test_jobs.authorized_submit(self.jobs, run["run_id"])
         self.jobs.transfer.fail_download = True
-        first = self.jobs.job_sync(run["run_id"])
+        first = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertFalse(first["ok"])
         self.jobs.transfer.fail_download = False
-        retried = self.jobs.job_sync(run["run_id"])
+        retried = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertTrue(retried["resumed"])
         self.assertEqual(retried["run"]["output_dir"], first["run"]["sync_options"]["destination"])
         self.assertTrue(Path(retried["run"]["output_dir"]).exists())

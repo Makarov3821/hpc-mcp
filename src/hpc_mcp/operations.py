@@ -53,13 +53,17 @@ def start(jobs, run_id, options=None):
         if run["phase"] != "submitted":
             raise ValueError("sync requires a confirmed submitted run")
         cluster = jobs._cluster(run)
+        from .submission import sync_guard
+        authorization_token = sync_guard(jobs, run, options)
         with jobs.history.connect() as db:
             active = db.execute("SELECT id FROM operations WHERE run_id=? AND json_extract(data,'$.state') IN ('queued','running')", (run_id,)).fetchone()
             if active:
                 raise ValueError(f"sync operation already registered: {active[0]}; inspect it first")
             operation_id = "op_" + uuid.uuid4().hex
             value = {"operation_id": operation_id, "run_id": run_id, "created_at": now(),
-                     "state": "queued", "options": options, "cluster": asdict(cluster), "progress": {}}
+                     "state": "queued", "options": options, "cluster": asdict(cluster), "progress": {},
+                     "authorization_token": authorization_token,
+                     "config_path": str(jobs.config_path) if jobs.config_path else None}
             db.execute("INSERT INTO operations VALUES (?,?,?)", (operation_id, run_id, json.dumps(value)))
         jobs.history.update(run_id, "sync_operation_registered", last_sync_operation=operation_id)
         try:

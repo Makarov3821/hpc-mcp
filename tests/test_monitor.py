@@ -35,7 +35,7 @@ class MonitorTests(unittest.TestCase):
     def submit(self, scheduler='lsf'):
         run = self.jobs.job_prepare(scheduler, str(self.fixture.source), 'job.sh',
             ['results/***', '*.log'], project_root=str(self.fixture.root), input_files=['job.sh', 'data.txt'])['run']
-        self.assertTrue(self.jobs.job_submit(run['run_id'])['ok'])
+        self.assertTrue(test_jobs.authorized_submit(self.jobs, run['run_id'])['ok'])
         return self.jobs.history.get(run['run_id'])
 
     def advance(self, seconds=5):
@@ -58,8 +58,8 @@ class MonitorTests(unittest.TestCase):
     def test_watch_is_atomic_idempotent_and_does_not_submit_or_start_daemon(self):
         run = self.submit()
         with patch.object(self.jobs, 'job_submit') as submit, patch('hpc_mcp.monitor.subprocess.Popen') as process:
-            first = self.monitor.watch([run['run_id']])['monitors'][0]
-            second = self.monitor.watch([run['run_id']])['monitors'][0]
+            first = test_jobs.authorized_watch(self.monitor, [run['run_id']])['monitors'][0]
+            second = test_jobs.authorized_watch(self.monitor, [run['run_id']])['monitors'][0]
             self.assertEqual(first['generation'], second['generation'])
             self.assertTrue(first['policy']['sync_options']['stable_only'])
             self.assertEqual(first['policy']['sync_options']['destination'], str(self.fixture.source))
@@ -67,15 +67,15 @@ class MonitorTests(unittest.TestCase):
             process.assert_not_called()
         prepared = self.fixture.prepare()
         with self.assertRaises(ValueError):
-            self.monitor.watch([run['run_id'], prepared['run_id']], reset=True)
+            test_jobs.authorized_watch(self.monitor, [run['run_id'], prepared['run_id']], reset=True)
         self.assertEqual(first['generation'], self.monitor.entry(run['run_id'])['generation'])
         for options in ({'stable_only': False}, {'unknown': True}, {'overwrite': 'replace'}, {'resume': 'yes'}, {'max_file_bytes': 0}):
             with self.subTest(options=options), self.assertRaises(ValueError):
-                self.monitor.watch([run['run_id']], sync_options=options)
+                test_jobs.authorized_watch(self.monitor, [run['run_id']], sync_options=options)
 
     def test_terminal_sync_once_then_restart_preserves_completion_and_notifications(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         with patch.object(self.jobs, 'job_sync_start', side_effect=self.sync_immediately) as start:
             self.engine.tick()
             self.advance()
@@ -95,7 +95,7 @@ class MonitorTests(unittest.TestCase):
     def test_failed_queries_never_use_stale_terminal_state_for_sync_or_cleanup(self):
         run = self.submit()
         self.jobs.history.update(run['run_id'], 'old_terminal', state='succeeded')
-        self.monitor.watch([run['run_id']], cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0})
+        test_jobs.authorized_watch(self.monitor, [run['run_id']], cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0})
         with patch.object(self.jobs.transport, 'run', return_value=CommandResult(-1, error='ssh_connection_failed')), \
              patch.object(self.jobs, 'job_sync_start') as start, patch.object(self.jobs, 'job_storage_cleanup') as cleanup:
             self.engine.tick()
@@ -111,7 +111,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_retries_are_bounded_and_same_policy_does_not_accidentally_rearm(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         def fail(run_id, options):
             return self.operation(run_id, 'failed', error='download conflict')
         with patch.object(self.jobs, 'job_sync_start', side_effect=fail) as start:
@@ -124,14 +124,14 @@ class MonitorTests(unittest.TestCase):
             self.engine.tick()
             self.assertEqual(start.call_count, 2)
         self.assertEqual(self.monitor.entry(run['run_id'])['stage'], 'needs_attention')
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         self.assertEqual(self.monitor.entry(run['run_id'])['stage'], 'needs_attention')
-        self.monitor.watch([run['run_id']], reset=True)
+        test_jobs.authorized_watch(self.monitor, [run['run_id']], reset=True)
         self.assertEqual(self.monitor.entry(run['run_id'])['sync_failures'], 0)
 
     def test_existing_worker_is_adopted_and_dead_worker_does_not_resubmit(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         op = self.operation(run['run_id'], 'queued')['operation']
         with patch.object(self.jobs, 'job_sync_start') as start:
             self.engine.tick()
@@ -146,7 +146,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_unwatch_during_query_prevents_new_actions(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         original = self.jobs.transport.run
         def disable(*arguments):
             self.monitor.unwatch(run['run_id'])
@@ -158,7 +158,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_stop_signal_during_query_does_not_schedule_a_new_sync(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']])
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         stopped = [False]
         engine = MonitorEngine(self.monitor, self.settings, stopping=lambda: stopped[0])
         original = self.jobs.transport.run
@@ -173,7 +173,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_cleanup_requires_verified_retained_results_and_preserves_project_outputs(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']], cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0,
+        test_jobs.authorized_watch(self.monitor, [run['run_id']], cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0,
                                                           'sync_cache_age_seconds': 0})
         with patch.object(self.jobs, 'job_sync_start', side_effect=self.sync_immediately):
             self.engine.tick()
@@ -195,7 +195,7 @@ class MonitorTests(unittest.TestCase):
         one = self.submit()
         two = self.submit()
         self.jobs.history.update(two['run_id'], 'test_identity', job_id='4243')
-        self.monitor.watch([one['run_id'], two['run_id']], auto_sync=False)
+        test_jobs.authorized_watch(self.monitor, [one['run_id'], two['run_id']], auto_sync=False)
         with patch.object(self.jobs.transport, 'run', return_value=CommandResult(0, '4242|RUN|-|\n4243|EXIT|130|TERM_OWNER: killed\n')) as query:
             summary = self.engine.tick()
             self.assertEqual(query.call_count, 1)
@@ -209,7 +209,7 @@ class MonitorTests(unittest.TestCase):
         one = self.submit('slurm')
         two = self.submit('slurm')
         self.jobs.history.update(two['run_id'], 'test_identity', job_id='4243')
-        self.monitor.watch([one['run_id'], two['run_id']], auto_sync=False)
+        test_jobs.authorized_watch(self.monitor, [one['run_id'], two['run_id']], auto_sync=False)
         def query(cluster, command):
             if '--jobs=4242,4243' in command:
                 return CommandResult(0, '4242|RUNNING|None\n')
@@ -225,7 +225,7 @@ class MonitorTests(unittest.TestCase):
         one = self.submit()
         two = self.submit()
         self.jobs.history.update(two['run_id'], 'test_identity', job_id='4243')
-        self.monitor.watch([one['run_id'], two['run_id']], auto_sync=False)
+        test_jobs.authorized_watch(self.monitor, [one['run_id'], two['run_id']], auto_sync=False)
         settings = MonitorSettings(poll_interval_seconds=5, max_status_commands_per_cycle=1, batch_queries=False)
         engine = MonitorEngine(self.monitor, settings, lambda: self.epoch[0])
         def query(cluster, command):
@@ -242,10 +242,10 @@ class MonitorTests(unittest.TestCase):
     def test_poll_window_bounds_newly_registered_jobs_as_well_as_repeated_ticks(self):
         one = self.submit()
         two = self.submit()
-        self.monitor.watch([one['run_id']], auto_sync=False)
+        test_jobs.authorized_watch(self.monitor, [one['run_id']], auto_sync=False)
         with patch.object(self.jobs.transport, 'run', return_value=CommandResult(0, '4242|RUN|-|\n')) as query:
             self.engine.tick()
-            self.monitor.watch([two['run_id']], auto_sync=False)
+            test_jobs.authorized_watch(self.monitor, [two['run_id']], auto_sync=False)
             before = query.call_count
             self.engine.tick()
             self.assertEqual(query.call_count, before)
@@ -255,7 +255,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_empty_output_selection_is_not_successful_retention_or_infinite_retry(self):
         run = self.submit()
-        self.monitor.watch([run['run_id']], sync_options={'includes': ['missing.chk']},
+        test_jobs.authorized_watch(self.monitor, [run['run_id']], sync_options={'includes': ['missing.chk']},
                            cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0})
         with patch.object(self.jobs, 'job_sync_start', side_effect=self.sync_immediately) as start:
             self.engine.tick()
@@ -272,7 +272,7 @@ class MonitorTests(unittest.TestCase):
     def test_global_sync_capacity_includes_workers_started_outside_monitor(self):
         one = self.submit()
         two = self.submit()
-        self.monitor.watch([two['run_id']])
+        test_jobs.authorized_watch(self.monitor, [two['run_id']])
         self.operation(one['run_id'], 'queued')
         settings = MonitorSettings(max_sync_operations=1)
         with patch.object(self.jobs, 'job_sync_start') as start:
@@ -282,7 +282,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_notification_retention_reports_cursor_gaps_without_deleting_history(self):
         run = self.submit()
-        entry = self.monitor.watch([run['run_id']], auto_sync=False)['monitors'][0]
+        entry = test_jobs.authorized_watch(self.monitor, [run['run_id']], auto_sync=False)['monitors'][0]
         for index in range(25):
             self.monitor.update(entry, ('test', 'event_' + str(index), {'index': index}), next_check_at=None)
         MonitorEngine(self.monitor, MonitorSettings(notifications_limit=10)).tick()
@@ -327,7 +327,8 @@ class MonitorTests(unittest.TestCase):
         config = self.fixture.root / 'clusters.toml'
         from hpc_mcp.config import ConfigManager
         ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf', 'work_root': str(self.fixture.remote)})
-        self.monitor.watch([run['run_id']], auto_sync=False)
+        self.jobs.config_path = config
+        test_jobs.authorized_watch(self.monitor, [run['run_id']], auto_sync=False)
         env = {**os.environ, 'PATH': str(self.fixture.bin) + ':' + os.environ['PATH'],
                'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'src')}
         argv = [sys.executable, '-m', 'hpc_mcp', '--config', str(config), '--state-dir', str(self.jobs.history.root),
@@ -362,7 +363,8 @@ class MonitorTests(unittest.TestCase):
         config = self.fixture.root / 'clusters.toml'
         from hpc_mcp.config import ConfigManager
         ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf', 'work_root': str(self.fixture.remote)})
-        self.monitor.watch([run['run_id']])
+        self.jobs.config_path = config
+        test_jobs.authorized_watch(self.monitor, [run['run_id']])
         def stop_and_wait():
             self.monitor.stop()
             deadline = time.monotonic() + 5

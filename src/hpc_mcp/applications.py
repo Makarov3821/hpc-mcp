@@ -420,6 +420,7 @@ class ApplicationService:
             return {'ok': True, 'application': record, 'restart_required': True}
 
     def prepare(self, application, cluster, input_path, project_root, parameters=None, version=None):
+        self.jobs.refresh_clusters()
         with self.locked():
             index = self.read_index()
             chosen = version if version is not None else index.get(application, {}).get('bindings', {}).get(cluster)

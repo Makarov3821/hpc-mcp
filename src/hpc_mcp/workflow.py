@@ -49,6 +49,13 @@ def submission_guard(history, run_id, token):
         if not row:
             return
         workflow = json.loads(db.execute('SELECT data FROM workflows WHERE id=?', (row[0],)).fetchone()[0])
+    if (digest(workflow['plan']) != workflow['review_token'] or
+            (workflow.get('confirmation') or {}).get('plan_token') != workflow['review_token']):
+        raise ValueError('workflow needs confirmation of its current exact plan')
+    if token:
+        authorized = (history.get(run_id).get('submission_authorization') or {}).get('workflow') or {}
+        if authorized != {'workflow_id': row[0], 'review_token': workflow['review_token']}:
+            raise ValueError('workflow task lacks authorization for the current workflow plan')
     task = workflow['tasks'][row[1]]
     if not workflow['enabled'] or task.get('reservation') != token or not token or task['run_id'] != run_id:
         raise ValueError('run belongs to a workflow; release it through the confirmed workflow, not job_submit')
@@ -97,6 +104,7 @@ class WorkflowService:
                        for stage in sorted({t['stage'] for t in v['tasks'].values()})}} for v in values]}
 
     def plan(self, name, run_ids, dependencies=None, limits=None):
+        from .submission import build
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise ValueError('workflow name must be nonempty and at most 100 characters')
         if (not isinstance(run_ids, list) or not 1 <= len(run_ids) <= 500
@@ -157,11 +165,25 @@ class WorkflowService:
             targets = [m['target'] for e in requirements for m in e['files']]
             if len(set(targets)) != len(targets) or any(a.startswith(b + '/') for a in targets for b in targets if a != b):
                 raise ValueError('duplicate or overlapping handoff targets')
-        plan = {'name': name, 'run_ids': run_ids, 'dependencies': parents, 'limits': asdict(policy),
-                'runs': {rid: {'cluster_config': r['cluster_config'], 'manifest': r['manifest'],
-                               'command': r['command'], 'outputs': r['outputs'],
-                               'generation': r.get('generation'), 'profile': r.get('profile')} for rid, r in runs.items()}}
         workflow_id = 'w_' + uuid.uuid4().hex
+        downloads = {}
+        for requirements in parents.values():
+            for edge in requirements:
+                names = [m['source'] for m in edge['files']]
+                if edge['condition'] == 'application_succeeded':
+                    names.append(self.jobs.history.get(edge['parent_run_id']).get('application', {}).get('log', 'stdout.log'))
+                downloads.setdefault(edge['parent_run_id'], set()).update(names)
+        def permissions(rid):
+            run = self.jobs.history.get(rid)
+            return {'auto_submit': rid in runs, 'extra_sync': [dict(mode='filtered', includes=sorted(downloads[rid]),
+                stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None)]
+                if downloads.get(rid) else []}
+        frozen = {rid: build(self.jobs, run, permissions(rid)) for rid, run in runs.items()}
+        external = {rid: build(self.jobs, self.jobs.history.get(rid), permissions(rid))
+                    for rid in downloads if rid not in runs and downloads[rid]}
+        plan = {'version': 2, 'name': name, 'run_ids': run_ids, 'dependencies': parents, 'limits': asdict(policy),
+                'runs': frozen, 'execution_plans': frozen, 'external_plans': external,
+                'derivation_requires_confirmation': True}
         value = {'workflow_id': workflow_id, 'created_at': now(), 'plan': plan, 'review_token': digest(plan),
                  'enabled': False, 'next_tick_at': 0, 'submission_times': [], 'confirmation': None,
                  'tasks': {rid: {'source_run_id': rid, 'run_id': rid, 'stage': 'waiting', 'attempts': 0} for rid in run_ids}}
@@ -173,7 +195,10 @@ class WorkflowService:
                     locks.enter_context(self.jobs.history.lock(rid))
                 db.execute('BEGIN IMMEDIATE')
                 for rid in run_ids:
-                    if self.jobs.history.get(rid)['phase'] != 'prepared':
+                    current = self.jobs.history.get(rid)
+                    if digest(build(self.jobs, current, frozen[rid]['automation'])) != digest(frozen[rid]):
+                        raise ValueError('run changed during workflow planning')
+                    if current['phase'] != 'prepared':
                         raise ValueError('run changed during workflow planning')
                     if db.execute('SELECT 1 FROM workflow_claims WHERE run_id=?', (rid,)).fetchone():
                         raise ValueError('run is already owned by a workflow')
@@ -181,15 +206,78 @@ class WorkflowService:
                 db.execute('INSERT INTO workflows VALUES (?,?)', (workflow_id, json.dumps(value)))
         return self.get(workflow_id)
 
+    def review(self, workflow_id):
+        """Pause and freeze current concrete execution runs; never inherit approval for new inputs."""
+        from .submission import build
+        with state_lock(self.jobs.history, 'workflow-dispatch.lock'):
+            value = self.get(workflow_id)['workflow']
+            self._control(workflow_id, enabled=False)
+            with ExitStack() as locks:
+                ids = {t['run_id'] for t in value['tasks'].values()} | set(value['plan'].get('external_plans', {}))
+                for rid in sorted(ids):
+                    locks.enter_context(self.jobs.history.lock(rid))
+                downloads = {}
+                for edges in value['plan']['dependencies'].values():
+                    for edge in edges:
+                        names = [m['source'] for m in edge['files']]
+                        if edge['condition'] == 'application_succeeded':
+                            names.append(self.jobs.history.get(edge['parent_run_id']).get('application', {}).get('log', 'stdout.log'))
+                        downloads.setdefault(edge['parent_run_id'], set()).update(names)
+                def permissions_for(rid, previous, automatic):
+                    permissions = dict(previous or {}, auto_submit=automatic)
+                    run = self.jobs.history.get(rid)
+                    if downloads.get(rid):
+                        permissions['extra_sync'] = [dict(mode='filtered', includes=sorted(downloads[rid]),
+                            stable_only=True, layout='direct' if run.get('project_root') else 'snapshot', destination=None)]
+                    return permissions
+                frozen = {}
+                for task_id, task in value['tasks'].items():
+                    source = value['plan']['runs'][task_id]
+                    permissions = permissions_for(task_id, source.get('automation'), True)
+                    frozen[task_id] = build(self.jobs, self.jobs.history.get(task['run_id']), permissions)
+                external = {rid: build(self.jobs, self.jobs.history.get(rid),
+                    permissions_for(rid, value['plan'].get('external_plans', {}).get(rid, {}).get('automation'), False))
+                    for rid in downloads if rid not in value['tasks'] and downloads[rid]}
+                plan = dict(value['plan'], version=2, execution_plans=frozen, external_plans=external,
+                            derivation_requires_confirmation=True)
+                if len(json.dumps(plan).encode()) > 4 * 1024 * 1024:
+                    raise ValueError('workflow plan exceeds 4 MiB')
+                value.setdefault('reviews', []).append({'time': now(), 'previous_token': value['review_token']})
+                value.update(plan=plan, review_token=digest(plan), enabled=False, confirmation=None, next_tick_at=0, authorization_error=None)
+                for task in value['tasks'].values():
+                    if task['stage'] == 'awaiting_authorization':
+                        task.update(stage='waiting', last_error=None)
+                with self.jobs.history.connect() as db:
+                    db.execute('UPDATE workflows SET data=? WHERE id=?', (json.dumps(value), workflow_id))
+        return self.get(workflow_id)
+
     def start(self, workflow_id, review_token, confirmation_note):
+        from .submission import build, authorize_locked
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
             raise ValueError('record explicit user authorization for this automatic submission plan')
-        value = self.get(workflow_id)['workflow']
-        if value['review_token'] != review_token:
-            raise ValueError('workflow review token differs')
-        for task in value['tasks'].values():
-            self.jobs._cluster(self.jobs.history.get(task['run_id']))
-        self._control(workflow_id, enabled=True, confirmation={'time': now(), 'note': confirmation_note})
+        with state_lock(self.jobs.history, 'workflow-dispatch.lock'):
+            value = self.get(workflow_id)['workflow']
+            if value['review_token'] != review_token:
+                raise ValueError('workflow review token differs')
+            self._control(workflow_id, enabled=False)
+            if value['plan'].get('version') != 2:
+                raise ValueError('legacy workflow requires workflow_review and a new confirmation')
+            expected = {t['run_id']: value['plan']['execution_plans'][tid] for tid, t in value['tasks'].items()}
+            expected.update(value['plan'].get('external_plans', {}))
+            with ExitStack() as locks:
+                for rid in sorted(expected):
+                    locks.enter_context(self.jobs.history.lock(rid))
+                for rid, plan in expected.items():
+                    run = self.jobs.history.get(rid)
+                    if plan['run_id'] != rid or digest(build(self.jobs, run, plan['automation'])) != digest(plan):
+                        raise ValueError('workflow task changed; use workflow_review and confirm its new token')
+                for rid, plan in expected.items():
+                    token = digest(plan)
+                    self.jobs.history.update(rid, 'workflow_submission_plan_frozen', submission_plan=plan,
+                                             submission_plan_token=token, submission_authorization=None)
+                    authorize_locked(self.jobs, self.jobs.history.get(rid), token, confirmation_note,
+                        {'workflow_id': workflow_id, 'review_token': review_token})
+                self._control(workflow_id, enabled=True, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
         return self.get(workflow_id)
 
     def pause(self, workflow_id):
@@ -219,6 +307,10 @@ class WorkflowService:
         from .workflow_engine import advance
         with state_lock(self.jobs.history, 'workflow-dispatch.lock', blocking=False):
             value = self.get(workflow_id)['workflow']
+            if value['enabled'] and (value.get('confirmation') or {}).get('plan_token') != value['review_token']:
+                self._control(workflow_id, enabled=False, authorization_error='workflow_review and new confirmation required')
+                return {'ok': False, 'error': 'workflow_authorization_required', 'workflow': self.get(workflow_id)['workflow'],
+                        'deferred': True, 'status_commands': 0}
             if not value['enabled'] or self.clock() < value['next_tick_at']:
                 return {'ok': True, 'workflow': value, 'deferred': True, 'status_commands': 0}
             limits = WorkflowLimits(**value['plan']['limits'])

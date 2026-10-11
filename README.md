@@ -117,7 +117,7 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 3. setup_flow_step(application_review_request) 返回固定材料；agent 启动全新上下文 reviewer，不共享改造对话或作者结论。
 4. setup_flow_step(application_review_submit) 原样保存报告；revise 时按意见修订、安装新版本再审阅。没有独立 reviewer 能力时等待，不能模拟报告。
 5. pass 后展示 confirmation_plan，用户核对，再 setup_flow_confirm 激活。配置／报告变化或旧 token 不能授权；重启 MCP 刷新应用工具。
-6. 日常 application_prepare 准备独立 run，再按用户意图 job_submit；真实小任务完成后 application_validate 核对明确判据。激活不等于真实验证通过。
+6. 日常 application_prepare 准备独立 run，展示 job_submission_plan，用户确认后 job_authorize 再 job_submit；真实小任务完成后 application_validate 核对明确判据。激活不等于真实验证通过。
 
 未注册软件返回 application_not_registered，并请求用户提供模板。不会猜测软件路径、MPI 环境或 Slurm 转换；未迁移的 packing／批量扫描明确排除，多任务用多个独立 run 与 workflow 管理。
 
@@ -217,12 +217,13 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：
 
 1. `job_prepare(cluster, input_dir, script)`：返回本地快照和计划，不提交；检查上传清单与实际提交命令。
-2. `job_submit(run_id)`：上传、校验、提交，取得 `job_id`。响应不明时调用 `job_recover`，不要创建重复作业。
-3. `job_status`、`job_logs`：确认调度状态和日志；避免高频轮询。
-4. `job_sync`：取回结果，查看 `output_dir`、`output_manifest`、`sync_options` 和 `final`。
-5. 重启 MCP 后用 `job_list`／`job_get` 验证同一状态目录下的历史仍可读。
+2. `job_submission_plan(run_id, automation=null)`：展示实际脚本、输入哈希、完整集群设置、远程目录和同步／清理权限；用户核对后 `job_authorize(run_id, review_token, confirmation_note)`。
+3. `job_submit(run_id)`：复查精确授权、上传、校验、提交，取得 `job_id`。响应不明时调用 `job_recover`，不要创建重复作业。
+4. `job_status`、`job_logs`：确认调度状态和日志；避免高频轮询。
+5. `job_sync`：取回结果，查看 `output_dir`、`output_manifest`、`sync_options` 和 `final`。
+6. 重启 MCP 后用 `job_list`／`job_get` 验证同一状态目录下的历史仍可读。
 
-应用插件任务按 handler 返回的明确 outputs 同步；低层 job_prepare 未指定规则时仍可采用全文件模式。内部回执、符号链接不下载。已有作业保留旧的过滤设置。Agent 可以在每次同步时覆盖选择：
+应用插件任务按 handler 返回的明确 outputs 同步；低层 job_prepare 未指定规则时仍可采用全文件模式。内部回执、符号链接不下载。已有作业保留旧的过滤设置。Agent 可以在批准范围内取具体文件；扩大选择或更换目标／覆盖策略须先用 job_submission_plan(automation={sync_options:...}) 展示并重新确认。下面为同步参数示例：
 
 ```json
 {
@@ -266,7 +267,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 同步暂存位于 `/ABS/A/.hpc-mcp-sync/<run_id>/<attempt_id>/`，成功安装结果后删除暂存并移除空父目录，不额外保存输出副本到 agent 状态目录。失败暂存保留以供排查。原有未指定 `project_root` 的作业继续使用原同步布局；显式 `destination` 也仍可选择其他结果位置。
 
-清理失败／过期暂存可调用 `job_cache_cleanup(run_id, older_than_seconds=86400, dry_run=true)` 预览，再用 `dry_run=false` 执行。CLI 对应：
+清理失败／过期暂存可调用 `job_cache_cleanup(run_id, older_than_seconds=86400, dry_run=true)` 预览，授权计划须包含相应 cleanup_policy，再用 `dry_run=false` 执行。CLI 对应：
 
 ```bash
 /ABS/HPC_MCP/repo/.venv/bin/hpc-mcp --config /ABS/HPC_MCP/clusters.toml --state-dir /ABS/HPC_MCP/state \
@@ -297,11 +298,11 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 大文件先 `job_sync_preview` 检查选择、容量与空间，再 `job_sync`；需要后台传输时用 `job_sync_start`，保存 operation_id 并通过 `job_sync_operation` 查询。失败后先核对诊断与续传条件。结果归位及覆盖策略见第 5 节；完整限制见 [同步参考](docs/REFERENCE.md#同步预检续传与异步操作)。
 
-`job_cache_cleanup`、`job_storage_cleanup`、`input_cache_cleanup` 和 `job_remote_cleanup` 默认预览，核对后才显式应用。删除输入快照会失去重放材料；远程清理只保护已经选择并校验的下载结果。参数与保护条件见 [存储参考](docs/REFERENCE.md#存储与远程清理)。
+`job_cache_cleanup`、`job_storage_cleanup`、`input_cache_cleanup` 和 `job_remote_cleanup` 默认预览，核对并批准对应清理范围后才显式应用。删除输入快照会失去重放材料；远程清理只保护已经选择并校验的下载结果。参数与保护条件见 [存储参考](docs/REFERENCE.md#存储与远程清理)。
 
 ### 显式启用常驻监控
 
-先 `monitor_watch` 登记已提交 run 与固定同步策略，再 `monitor_start` 启动协调器；登记本身不启动。通过 `monitor_status` 和 `monitor_notifications` 查询进度、完成或需处理事件。`monitor_stop` 请求优雅停止，随后查询状态确认退出，已有 detached 同步 worker 可独立完成。
+先通过 job_submission_plan／job_authorize 明确批准 auto_sync=true 与固定同步／清理策略，再 `monitor_watch` 登记已提交 run，再 `monitor_start` 启动协调器；登记本身不启动。通过 `monitor_status` 和 `monitor_notifications` 查询进度、完成或需处理事件。`monitor_stop` 请求优雅停止，随后查询状态确认退出，已有 detached 同步 worker 可独立完成。
 
 自动清理默认关闭，需明确设置 cleanup_policy；查询预算、重试和保留策略见 [监控参考](docs/REFERENCE.md#常驻监控与自动整理)，配置示例见 [examples/monitor](examples/monitor/)。
 
@@ -323,7 +324,7 @@ systemctl --user daemon-reload
 
 ### 批量任务、依赖与用量
 
-多个独立 prepared run 用 `workflow_plan` 登记；核对精确计划后 `workflow_start` 记录授权，再通过 `workflow_tick` 或协调器推进。停止后续提交用 `workflow_pause`；停止监控不撤销工作流授权。依赖映射和失败处理见 [工作流参考](docs/REFERENCE.md#工作流接口)。
+多个独立 prepared run 用 `workflow_plan` 登记；核对精确计划后 `workflow_start` 记录授权，再通过 `workflow_tick` 或协调器推进。停止后续提交用 `workflow_pause`；停止监控不撤销工作流授权。依赖产物形成新的输入快照后暂停为 awaiting_authorization，用 workflow_review 查看具体脚本与哈希，用户确认新 token 后 workflow_start 继续。完整权限流程见 [提交授权](docs/SUBMISSION_AUTHORIZATION.md)，依赖映射和失败处理见 [工作流参考](docs/REFERENCE.md#工作流接口)。
 
 `job_usage` 查询单任务记账，`usage_report` 汇总本地缓存；缺失指标保持未知。参数、单位与统计范围见 [记账参考](docs/REFERENCE.md#记账接口)。
 

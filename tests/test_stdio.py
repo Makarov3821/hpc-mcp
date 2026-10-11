@@ -38,6 +38,9 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('application_review_request',tools)
                         self.assertIn('application_prepare',tools)
                         self.assertIn('job_sync',tools)
+                        self.assertIn('job_submission_plan',tools)
+                        self.assertIn('job_authorize',tools)
+                        self.assertIn('workflow_review',tools)
                         self.assertIn('workflow_plan',tools)
                         self.assertIn('setup_flow_create',tools)
                         self.assertIn('setup_flow_cleanup',tools)
@@ -88,6 +91,16 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(prepared['plugin']['version'],1)
                         details=await call(client,'job_get',{'run_id':run_id})
                         self.assertIn('#BSUB -n 28',details['run']['generated_script'])
+                        denied=await call(client,'job_submit',{'run_id':run_id})
+                        self.assertEqual(denied['error'],'submission_authorization_required')
+                        plan=await call(client,'job_submission_plan',{'run_id':run_id})
+                        self.assertEqual(plan['plan']['manifest'],details['run']['manifest'])
+                        bad=await call(client,'job_authorize',{'run_id':run_id,'review_token':'wrong','confirmation_note':'Synthetic user approval'})
+                        self.assertEqual(bad['error'],'submission_authorization_invalid')
+                        approved=await call(client,'job_authorize',{'run_id':run_id,'review_token':plan['review_token'],'confirmation_note':'Synthetic exact-plan approval; do not submit'})
+                        self.assertTrue(approved['ok'])
+                        self.assertEqual((await call(client,'job_get',{'run_id':run_id}))['run']['phase'],'prepared')
+
                     async with Client(params,mode=mode) as client:
                         tools={t.name:t for t in (await client.list_tools()).tools}
                         restored=await call(client,'setup_flow_get',{'flow_id':flow['flow_id']})

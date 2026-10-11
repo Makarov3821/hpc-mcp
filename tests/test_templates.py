@@ -120,12 +120,15 @@ class TemplateTests(unittest.TestCase):
         self.templates.template_import("example", changed)
         (self.source / "test1.gjf").write_text("later edit")
         restarted = TemplateService(self.jobs)
+        with self.assertRaisesRegex(ValueError, "job_authorize"):
+            restarted.template_run(plan["plan_id"])
+        test_jobs.authorize(self.jobs, plan["plan_id"])
         submitted = restarted.template_run(plan["plan_id"])
         self.assertTrue(submitted["ok"], submitted)
         self.assertEqual(submitted["run"]["template"]["version"], 1)
         self.assertTrue(restarted.template_run(plan["plan_id"])["already_processed"])
         self.assertEqual((self.fixture.root / "submissions").read_text(), "1")
-        synced = self.jobs.job_sync(run["run_id"])
+        synced = test_jobs.authorized_sync(self.jobs, run["run_id"])
         self.assertTrue(synced["ok"], synced)
         self.assertEqual((self.source / "test1.log").read_text(), "original card")
         self.assertEqual((self.source / "test1.chk").read_text(), "checkpoint")
@@ -141,8 +144,8 @@ class TemplateTests(unittest.TestCase):
                 [f"{scheduler}.log"], str(self.fixture.root), ["data.txt"])
             self.assertEqual({f["path"] for f in prepared["run"]["manifest"]},
                              {"data.txt", "test1.gjf", "hpc-mcp-job.sh"})
-            self.assertTrue(self.jobs.job_submit(prepared["run"]["run_id"])["ok"])
-            self.assertTrue(self.jobs.job_sync(prepared["run"]["run_id"])["ok"])
+            self.assertTrue(test_jobs.authorized_submit(self.jobs, prepared["run"]["run_id"])["ok"])
+            self.assertTrue(test_jobs.authorized_sync(self.jobs, prepared["run"]["run_id"])["ok"])
             self.assertEqual((self.source / f"{scheduler}.log").read_text(), "original card")
 
     def test_parameters_schema_scheduler_and_paths_validated_before_preparation(self):
@@ -166,6 +169,7 @@ class TemplateTests(unittest.TestCase):
             self.plan()
         (self.source / "hpc-mcp-job.sh").unlink()
         plan = self.plan()
+        test_jobs.authorize(self.jobs, plan["plan_id"])
         (Path(plan["run"]["snapshot_dir"]) / "hpc-mcp-job.sh").write_text("tampered")
         with self.assertRaisesRegex(ValueError, "snapshot changed"):
             self.templates.template_run(plan["plan_id"])

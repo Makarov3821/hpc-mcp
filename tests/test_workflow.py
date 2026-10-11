@@ -147,6 +147,15 @@ class WorkflowTests(unittest.TestCase):
             result = self.tick(value)
         derived_id = result['workflow']['tasks'][child]['run_id']
         self.assertNotEqual(derived_id, child)
+        self.assertEqual(result['workflow']['tasks'][child]['stage'], 'awaiting_authorization')
+        self.assertFalse(result['workflow']['enabled'])
+        self.assertEqual(self.count(), 1)
+        reviewed = self.flow.review(value['workflow_id'])['workflow']
+        self.assertNotEqual(reviewed['review_token'], value['review_token'])
+        with self.assertRaises(ValueError): self.start(value)
+        self.start(reviewed)
+        self.tick(reviewed)
+
         derived = self.jobs.history.get(derived_id)
         self.assertEqual(derived['phase'], 'submitted')
         self.assertEqual((Path(derived['remote_dir']) / 'child.out').read_text(), '42\n')
@@ -183,6 +192,10 @@ class WorkflowTests(unittest.TestCase):
         self.flow.retry(value['workflow_id'], [child])
         self.start(value)
         result = self.tick(value)
+        self.assertEqual(self.count(), 1)
+        reviewed = self.flow.review(value['workflow_id'])['workflow']
+        self.start(reviewed)
+        result = self.tick(reviewed)
         derived = self.jobs.history.get(result['workflow']['tasks'][child]['run_id'])
         self.assertEqual(derived['input_dir'], str(self.fixture.source))
         self.assertEqual(derived['source_run_id'], child)

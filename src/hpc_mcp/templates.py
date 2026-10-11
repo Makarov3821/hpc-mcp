@@ -154,6 +154,7 @@ class TemplateService:
                               input_exclude: list[str] | None = None, max_input_bytes: int | None = None,
                               context: dict | None = None,
                               application_context: dict | None = None) -> dict:
+        self.jobs.refresh_clusters()
         if cluster not in self.jobs.clusters:
             raise ValueError(f"unknown cluster: {cluster}")
         script_name = relative_path(script_name)
@@ -189,6 +190,7 @@ class TemplateService:
     def template_plan(self, name: str, cluster: str, input_dir: str,
                       parameters: dict | None = None, version: int | None = None,
                       project_root: str | None = None) -> dict:
+        self.jobs.refresh_clusters()
         template = self.template_get(name, version)["template"]
         effective, bindings = bind(template["definition"], parameters)
         validate_definition(effective)

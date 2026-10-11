@@ -54,8 +54,8 @@ class GaussianTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.spec["command"] = ["printf", "%s\\n", text]
                 run = self.prepare()
-                self.jobs.job_submit(run["run_id"])
-                self.jobs.job_sync(run["run_id"], overwrite="merge")
+                test_jobs.authorized_submit(self.jobs, run["run_id"])
+                test_jobs.authorized_sync(self.jobs, run["run_id"], overwrite="merge")
                 result = self.gaussian.result(run["run_id"])["application_result"]
                 self.assertEqual(result["state"], expected)
                 self.assertEqual(self.jobs.history.get(run["run_id"])["state"], "succeeded")
@@ -69,8 +69,8 @@ class GaussianTests(unittest.TestCase):
             self.spec["command"] = ["bash", "-c", "printf '%s\\n' 'Normal termination of Gaussian 16 at now'; "
                                    + ("printf '%s\\n' 'Normal termination of Gaussian 16 at now'" if count == 2 else "true")]
             run = self.prepare(expected_sections=2)
-            self.jobs.job_submit(run["run_id"])
-            self.jobs.job_sync(run["run_id"], overwrite="merge")
+            test_jobs.authorized_submit(self.jobs, run["run_id"])
+            test_jobs.authorized_sync(self.jobs, run["run_id"], overwrite="merge")
             state = self.gaussian.result(run["run_id"], max_bytes=1024)["application_result"]["state"]
             self.assertEqual(state, "succeeded" if count == 2 else "unknown")
 
@@ -80,8 +80,8 @@ class GaussianTests(unittest.TestCase):
         self.spec["output_directories"] = ["results"]
         run = self.prepare()
         self.assertIn("mkdir -p -- results", run["generated_script"])
-        self.jobs.job_submit(run["run_id"])
-        self.assertTrue(self.jobs.job_sync(run["run_id"])["ok"])
+        test_jobs.authorized_submit(self.jobs, run["run_id"])
+        self.assertTrue(test_jobs.authorized_sync(self.jobs, run["run_id"])["ok"])
         result = self.gaussian.result(run["run_id"], max_bytes=1024)["application_result"]
         self.assertEqual(result["state"], "succeeded")
         self.assertGreater(result["scanned_bytes"], 2000000)

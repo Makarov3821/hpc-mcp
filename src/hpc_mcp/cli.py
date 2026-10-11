@@ -31,7 +31,7 @@ def main():
     workflow_start.add_argument('workflow_id')
     workflow_start.add_argument('review_token')
     workflow_start.add_argument('--confirmation-note', required=True)
-    for action in ('workflow-pause', 'workflow-tick'):
+    for action in ('workflow-pause', 'workflow-tick', 'workflow-review'):
         sub.add_parser(action).add_argument('workflow_id')
     workflow_status = sub.add_parser('workflow-status')
     workflow_status.add_argument('workflow_id', nargs='?')
@@ -182,7 +182,14 @@ def main():
     cleanup.add_argument("run_id")
     cleanup.add_argument("--older-than-seconds", type=int, default=86400)
     cleanup.add_argument("--apply", action="store_true", help="Delete candidates (default: preview)")
-    for action in ("submit", "status", "get", "recover", "cancel"):
+    submission_plan = sub.add_parser('submission-plan')
+    submission_plan.add_argument('run_id')
+    submission_plan.add_argument('--automation-file')
+    authorize = sub.add_parser('authorize')
+    authorize.add_argument('run_id')
+    authorize.add_argument('review_token')
+    authorize.add_argument('--confirmation-note', required=True)
+    for action in ("submit", "status", "get", "recover", "cancel", "revoke-authorization"):
         sub.add_parser(action).add_argument("run_id")
     sync = sub.add_parser("sync")
     sync.add_argument("run_id")
@@ -267,7 +274,7 @@ def main():
             from .jobs import JobService
             from .setup_workflows import SetupWorkflowService
             clusters = load_config(args.config) if Path(args.config).exists() else {}
-            jobs = JobService(clusters, args.state_dir)
+            jobs = JobService(clusters, args.state_dir, config_path=args.config)
             flows = SetupWorkflowService(jobs, ClusterService(clusters), ConfigManager(args.config, clusters))
             action = args.action.removeprefix('setup-flow-')
             if action == 'create': data = flows.create(args.kind, args.request_key, args.label)
@@ -296,7 +303,7 @@ def main():
             from .jobs import JobService
             from .responses import preparation_receipt
             clusters = load_config(args.config) if Path(args.config).exists() else {}
-            apps = ApplicationService(JobService(clusters, args.state_dir))
+            apps = ApplicationService(JobService(clusters, args.state_dir, config_path=args.config))
             action = args.action.removeprefix('application-')
             if action == 'list': data = apps.list()
             elif action in ('install', 'update'): data = apps.install(args.bundle_dir)
@@ -319,7 +326,7 @@ def main():
             from .profiles import ProfileService
             from .jobs import JobService
             clusters = load_config(args.config) if Path(args.config).exists() else {}
-            data = ProfileService(ClusterService(clusters), JobService(clusters, args.state_dir)).inspect(
+            data = ProfileService(ClusterService(clusters), JobService(clusters, args.state_dir, config_path=args.config)).inspect(
                 args.script_path, args.cluster, args.max_bytes)
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return
@@ -352,7 +359,7 @@ def main():
             from .jobs import JobService
             from .workflow import WorkflowService
             from .accounting import AccountingService
-            jobs = JobService(clusters, args.state_dir)
+            jobs = JobService(clusters, args.state_dir, config_path=args.config)
             workflows = WorkflowService(jobs)
             if args.action == 'workflow-plan':
                 data = workflows.plan(args.name, args.run_ids,
@@ -360,6 +367,8 @@ def main():
                     json.loads(args.limits))
             elif args.action == 'workflow-start':
                 data = workflows.start(args.workflow_id, args.review_token, args.confirmation_note)
+            elif args.action == 'workflow-review':
+                data = workflows.review(args.workflow_id)
             elif args.action == 'workflow-pause':
                 data = workflows.pause(args.workflow_id)
             elif args.action == 'workflow-retry':
@@ -379,7 +388,7 @@ def main():
         if onboarding:
             from .profiles import ProfileService
             from .jobs import JobService
-            profiles = ProfileService(service, JobService(clusters, args.state_dir))
+            profiles = ProfileService(service, JobService(clusters, args.state_dir, config_path=args.config))
             if args.action == 'cluster-probe':
                 data = profiles.probes.probe(args.ssh_host, args.scheduler, args.work_root,
                     args.path, args.module_avail, args.max_module_bytes, args.timeout, args.cluster, args.queue_details)
@@ -396,7 +405,7 @@ def main():
         if args.action == "serve":
             from .jobs import JobService
             from .server import create_server
-            create_server(service, JobService(service.clusters, args.state_dir), config).run(transport="stdio")
+            create_server(service, JobService(service.clusters, args.state_dir, config_path=args.config), config).run(transport="stdio")
             return
         if args.action == "list":
             data = {"ok": True, "clusters": service.list_clusters()}
@@ -409,7 +418,7 @@ def main():
             data = method(args.cluster)
         else:
             from .jobs import JobService
-            jobs = JobService(service.clusters, args.state_dir)
+            jobs = JobService(service.clusters, args.state_dir, config_path=args.config)
             if args.action.startswith("monitor-"):
                 from .monitor import MonitorService
                 monitor = MonitorService(jobs)
@@ -473,6 +482,13 @@ def main():
                 data = jobs.job_sync(args.run_id, args.mode, args.include, args.exclude,
                     args.destination, args.layout, args.overwrite, args.checksum, args.compress, args.timeout, args.resume,
                     args.max_file_bytes, args.max_total_bytes, args.reserve_bytes, args.stable_only)
+            elif args.action == 'revoke-authorization':
+                data = jobs.job_revoke_authorization(args.run_id)
+            elif args.action == 'submission-plan':
+                data = jobs.job_submission_plan(args.run_id,
+                    json.loads(Path(args.automation_file).read_text()) if args.automation_file else None)
+            elif args.action == 'authorize':
+                data = jobs.job_authorize(args.run_id, args.review_token, args.confirmation_note)
             elif args.action == "history":
                 data = jobs.job_list(args.cluster, args.limit, args.offset)
             elif args.action == "get":

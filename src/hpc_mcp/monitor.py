@@ -214,8 +214,11 @@ class MonitorService:
             run = self.history.get(run_id)
             if run['phase'] != 'submitted' or not run.get('job_id'):
                 raise ValueError('monitoring requires confirmed submitted runs; recover uncertain submissions first')
+            from .submission import monitor_guard
+            proposed = {'auto_sync': auto_sync, 'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup}
+            token = monitor_guard(self.jobs, run, proposed) if auto_sync or cleanup != cleanup_from(None) else None
             plans.append((run_id, {'auto_sync': auto_sync,
-                'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup}))
+                'sync_options': sync_options_for(self.jobs, run, sync_options), 'cleanup_policy': cleanup, 'authorization_token': token}))
         result = []
         with state_lock(self.history, 'monitor-control.lock'), self.history.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -260,6 +263,7 @@ class MonitorService:
             instance_id = 'mon_' + uuid.uuid4().hex
             value = {'instance_id': instance_id, 'state': 'starting', 'settings': asdict(effective),
                      'clusters': {name: asdict(c) for name, c in self.jobs.clusters.items()},
+                     'config_path': str(self.jobs.config_path) if self.jobs.config_path else None,
                      'stop_requested': False, 'started_at': now(), 'started_epoch': time.time()}
             if not value['clusters'] and any(e['enabled'] for e in self.entries()):
                 raise ValueError('load the cluster configuration before starting registered monitors')

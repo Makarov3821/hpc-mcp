@@ -15,6 +15,48 @@ from hpc_mcp.ssh import CommandResult
 from hpc_mcp.transfer import Transfer
 
 
+def authorize(jobs, run_id, **permissions):
+    plan = jobs.job_submission_plan(run_id, permissions)
+    return jobs.job_authorize(run_id, plan['review_token'], 'Explicit synthetic user confirmation for this regression test')
+
+
+def authorized_submit(jobs, run_id):
+    run = jobs.history.get(run_id)
+    if not run.get('submission_authorization') and run['phase'] not in ('submitted', 'submitting', 'submission_unknown', 'rejected', 'abandoned'):
+        authorize(jobs, run_id)
+    return jobs.job_submit(run_id)
+
+
+def authorized_sync(jobs, run_id, **options):
+    authorize(jobs, run_id, sync_options=options)
+    return jobs.job_sync(run_id, **options)
+
+
+def authorized_watch(monitor, run_ids, auto_sync=True, sync_options=None, cleanup_policy=None, reset=False):
+    for run_id in run_ids:
+        if auto_sync or cleanup_policy:
+            authorize(monitor.jobs, run_id, auto_sync=auto_sync, sync_options=sync_options, cleanup_policy=cleanup_policy)
+    return monitor.watch(run_ids, auto_sync, sync_options, cleanup_policy, reset)
+
+
+def authorized_cleanup(jobs, kind, run_id, *args):
+    import inspect
+    method = getattr(jobs, 'job_' + kind + '_cleanup')
+    values = inspect.signature(method).bind(run_id, *args); values.apply_defaults()
+    if not values.arguments['dry_run']:
+        permissions = dict(jobs.history.get(run_id).get('submission_plan', {}).get('automation', {}))
+        if kind == 'remote': permissions['remote_cleanup'] = True
+        else:
+            cleanup = dict(permissions.get('cleanup_policy', {}))
+            if kind == 'cache': cleanup['sync_cache_age_seconds'] = values.arguments['older_than_seconds']
+            else:
+                cleanup.update(storage_categories=values.arguments['categories'] or ['sync_history'],
+                               storage_age_seconds=values.arguments['older_than_seconds'])
+            permissions['cleanup_policy'] = cleanup
+        authorize(jobs, run_id, **permissions)
+    return method(run_id, *args)
+
+
 class LocalSSH:
     def __init__(self, bin_dir):
         self.bin_dir = bin_dir
@@ -110,14 +152,14 @@ class JobLifecycleTests(unittest.TestCase):
             with self.subTest(scheduler=scheduler):
                 run = self.prepare(scheduler)
                 self.assertFalse((Path(run["remote_dir"])).exists())
-                submitted = self.jobs.job_submit(run["run_id"])
+                submitted = authorized_submit(self.jobs, run["run_id"])
                 self.assertTrue(submitted["ok"], submitted)
                 self.assertEqual(submitted["run"]["job_id"], "4242")
                 status = self.jobs.job_status(run["run_id"])
                 self.assertEqual(status["run"]["state"], "succeeded")
                 logs = self.jobs.job_logs(run["run_id"])
                 self.assertEqual(logs["text"], "computed result\n")
-                synced = self.jobs.job_sync(run["run_id"])
+                synced = authorized_sync(self.jobs, run["run_id"])
                 self.assertTrue(synced["ok"], synced)
                 self.assertTrue(synced["final"])
                 output = Path(synced["run"]["output_dir"])
@@ -125,7 +167,7 @@ class JobLifecycleTests(unittest.TestCase):
                 self.assertFalse((output / "data.txt").exists())
                 self.assertFalse((output / ".hpc-mcp-response").exists())
                 self.assertTrue(self.jobs.job_cancel(run["run_id"])["ok"])
-                self.assertTrue(self.jobs.job_submit(run["run_id"])["already_processed"])
+                self.assertTrue(authorized_submit(self.jobs, run["run_id"])["already_processed"])
         self.assertEqual((self.root / "submissions").read_text(), "2")
         restarted = JobService(self.config, self.state, self.transport, self.transfer)
         self.assertEqual(len(restarted.job_list()["runs"]), 2)
@@ -135,11 +177,11 @@ class JobLifecycleTests(unittest.TestCase):
     def test_lost_response_recovered_without_duplicate(self):
         run = self.prepare()
         self.transport.lose_response = True
-        result = self.jobs.job_submit(run["run_id"])
+        result = authorized_submit(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["run"]["phase"], "submission_unknown")
         restarted = JobService(self.config, self.state, self.transport, self.transfer)
-        recovered = restarted.job_submit(run["run_id"])
+        recovered = authorized_submit(restarted, run["run_id"])
         self.assertTrue(recovered["ok"], recovered)
         self.assertEqual(recovered["run"]["job_id"], "4242")
         self.assertEqual((self.root / "submissions").read_text(), "1")
@@ -147,7 +189,7 @@ class JobLifecycleTests(unittest.TestCase):
     def test_missing_receipt_never_resubmits(self):
         run = self.prepare()
         self.jobs.history.update(run["run_id"], "interrupted", phase="submitting")
-        result = self.jobs.job_submit(run["run_id"])
+        result = authorized_submit(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["run"]["phase"], "submission_unknown")
         self.assertFalse((self.root / "submissions").exists())
@@ -159,13 +201,13 @@ class JobLifecycleTests(unittest.TestCase):
             db.execute("UPDATE runs SET data=json_remove(data, '$.internal_prefix') WHERE run_id=?",
                        (run["run_id"],))
         self.transport.lose_response = True
-        result = self.jobs.job_submit(run["run_id"])
+        result = authorized_submit(self.jobs, run["run_id"])
         self.assertEqual(result["run"]["phase"], "submission_unknown")
         self.assertTrue((Path(run["remote_dir"]) / ".xn02-response").exists())
         restarted = JobService(self.config, self.state, self.transport, self.transfer)
         self.assertTrue(restarted.job_recover(run["run_id"])["ok"])
         self.assertEqual((self.root / "submissions").read_text(), "1")
-        synced = restarted.job_sync(run["run_id"], mode="all")
+        synced = authorized_sync(restarted, run["run_id"], mode="all")
         self.assertTrue(synced["ok"], synced)
         self.assertFalse(any(p.name.startswith((".xn02-", ".hpc-mcp-"))
                              for p in Path(synced["run"]["output_dir"]).iterdir()))
@@ -173,45 +215,45 @@ class JobLifecycleTests(unittest.TestCase):
     def test_changed_source_does_not_change_prepared_snapshot(self):
         run = self.prepare()
         (self.source / "job.sh").write_text("exit 99")
-        self.assertTrue(self.jobs.job_submit(run["run_id"])["ok"])
+        self.assertTrue(authorized_submit(self.jobs, run["run_id"])["ok"])
         self.assertEqual(self.jobs.job_logs(run["run_id"])["text"], "computed result\n")
 
     def test_snapshot_tampering_blocks_submission(self):
         run = self.prepare()
         (Path(run["snapshot_dir"]) / "job.sh").write_text("exit 99")
         with self.assertRaisesRegex(ValueError, "snapshot changed"):
-            self.jobs.job_submit(run["run_id"])
+            authorized_submit(self.jobs, run["run_id"])
         self.assertFalse((self.root / "submissions").exists())
 
     def test_failed_upload_can_retry_without_submission(self):
         run = self.prepare()
         self.transfer.fail_upload = True
-        result = self.jobs.job_submit(run["run_id"])
+        result = authorized_submit(self.jobs, run["run_id"])
         self.assertEqual(result["run"]["phase"], "upload_failed")
         self.assertFalse((self.root / "submissions").exists())
         self.transfer.fail_upload = False
-        self.assertTrue(self.jobs.job_submit(run["run_id"])["ok"])
+        self.assertTrue(authorized_submit(self.jobs, run["run_id"])["ok"])
 
     def test_sync_failure_can_retry_and_does_not_overwrite(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.transfer.fail_download = True
-        self.assertFalse(self.jobs.job_sync(run["run_id"])["ok"])
+        self.assertFalse(authorized_sync(self.jobs, run["run_id"])["ok"])
         self.transfer.fail_download = False
-        first = self.jobs.job_sync(run["run_id"])
-        second = self.jobs.job_sync(run["run_id"])
+        first = authorized_sync(self.jobs, run["run_id"])
+        second = authorized_sync(self.jobs, run["run_id"])
         self.assertNotEqual(first["run"]["output_dir"], second["run"]["output_dir"])
         self.assertEqual((self.root / "submissions").read_text(), "1")
 
     def test_missing_status_retains_last_observation_and_sync_is_partial(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.jobs.job_status(run["run_id"])
         (self.bin / "bjobs").write_text("#!/bin/bash\nexit 1\n")
         result = self.jobs.job_status(run["run_id"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["run"]["state"], "succeeded")
-        synced = self.jobs.job_sync(run["run_id"])
+        synced = authorized_sync(self.jobs, run["run_id"])
         self.assertFalse(synced["final"])
         self.assertEqual(synced["run"]["sync_state"], "partial")
 
@@ -231,24 +273,24 @@ class JobLifecycleTests(unittest.TestCase):
         changed = {"lsf": Cluster("lsf", "different-host", "lsf", str(self.remote))}
         jobs = JobService(changed, self.state, self.transport, self.transfer)
         with self.assertRaisesRegex(ValueError, "changed since preparation"):
-            jobs.job_submit(run["run_id"])
+            authorized_submit(jobs, run["run_id"])
 
     def test_concurrent_operations_rejected(self):
         run = self.prepare()
         with self.jobs.history.lock(run["run_id"]):
             with self.assertRaisesRegex(ValueError, "another"):
-                self.jobs.job_submit(run["run_id"])
+                authorized_submit(self.jobs, run["run_id"])
 
     def test_cancel_is_a_request_not_a_final_state(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         result = self.jobs.job_cancel(run["run_id"])
         self.assertTrue(result["run"]["cancel_requested"])
         self.assertEqual(result["run"]["state"], "pending")
 
     def test_lsf_cancel_request_does_not_determine_final_state(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.jobs.job_cancel(run["run_id"])
         replies = [CommandResult(0, "4242|EXIT|130|\n"),
                    CommandResult(0, "4242|EXIT|130\n"),
@@ -262,7 +304,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_exit_reason_comes_from_scheduler(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.jobs.job_cancel(run["run_id"])
         for keyword, expected in (("TERM_OWNER", "cancelled"), ("TERM_RUNLIMIT", "failed")):
             with self.subTest(keyword=keyword), patch.object(self.transport, "run",
@@ -274,7 +316,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_conflicting_history_does_not_reclassify_current_failure(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         output = ("Job <4242>, Status <EXIT>, Command <job.sh>\n"
                   "Thu Oct 8 12:00:00 2026: Exited with exit code 130.\n"
                   "Thu Oct 8 12:00:00 2026: Completed <exit>; TERM_OWNER: job killed by owner.\n")
@@ -290,7 +332,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_older_bjobs_format_remains_supported(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         with patch.object(self.transport, "run", side_effect=[
             CommandResult(1, stderr="unsupported exit_reason field"),
             CommandResult(0, "4242|RUN|-\n")]):
@@ -300,7 +342,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_long_output_enriches_exit_without_losing_code(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         output = ("Job <4242>, User <user>, Status <EXIT>, Command <job.sh>\n"
                   "Thu Oct 8 12:00:00 2026: Completed <exit>; TERM_OWNER: job killed by owner.\n")
         with patch.object(self.transport, "run", side_effect=[
@@ -313,7 +355,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_expired_record_falls_back_to_accounting_then_history(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         for source in ("bacct", "bhist"):
             output = (f"Job <4242>, User <user>, Job Name <{run['run_id']}>, Command <job.sh>\n"
                       "Thu Oct 8 12:00:00 2026: Done successfully. The CPU time used is 0.4 seconds;\n")
@@ -330,7 +372,7 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_lsf_malformed_fallback_keeps_last_observation(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.jobs.job_status(run["run_id"])
         output = "Job <4242>, Status <DONE>\nJob <4242>, Status <EXIT>\n"
         with patch.object(self.transport, "run", side_effect=[
@@ -344,18 +386,18 @@ class JobLifecycleTests(unittest.TestCase):
     def test_rejected_submission_is_not_retried(self):
         run = self.prepare()
         (self.bin / "bsub").write_text("#!/bin/bash\nprintf 'queue closed\\n' >&2\nexit 1\n")
-        result = self.jobs.job_submit(run["run_id"])
+        result = authorized_submit(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["run"]["phase"], "rejected")
         count = len(self.transport.commands)
-        self.assertFalse(self.jobs.job_submit(run["run_id"])["ok"])
+        self.assertFalse(authorized_submit(self.jobs, run["run_id"])["ok"])
         self.assertEqual(len(self.transport.commands), count)
 
     def test_default_sync_all_and_per_call_exclusions(self):
         run = self.jobs.job_prepare("lsf", str(self.source), "job.sh")["run"]
         self.assertEqual(run["output_mode"], "all")
-        self.jobs.job_submit(run["run_id"])
-        synced = self.jobs.job_sync(run["run_id"], excludes=["data.txt"])
+        authorized_submit(self.jobs, run["run_id"])
+        synced = authorized_sync(self.jobs, run["run_id"], excludes=["data.txt"])
         output = Path(synced["run"]["output_dir"])
         self.assertTrue((output / "job.sh").exists())
         self.assertFalse((output / "data.txt").exists())
@@ -363,25 +405,25 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_sync_overrides_selection_and_direct_layout(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
-        first = self.jobs.job_sync(run["run_id"], mode="all", layout="direct")
+        authorized_submit(self.jobs, run["run_id"])
+        first = authorized_sync(self.jobs, run["run_id"], mode="all", layout="direct")
         output = Path(first["run"]["output_dir"])
         self.assertEqual(output, self.state / run["run_id"] / "outputs")
         self.assertTrue((output / "data.txt").exists())
         with self.assertRaisesRegex(ValueError, "destination exists"):
-            self.jobs.job_sync(run["run_id"], layout="direct")
-        replaced = self.jobs.job_sync(run["run_id"], includes=["results/***"],
+            authorized_sync(self.jobs, run["run_id"], layout="direct")
+        replaced = authorized_sync(self.jobs, run["run_id"], includes=["results/***"],
                                       layout="direct", overwrite="replace")
         self.assertFalse((output / "data.txt").exists())
         self.assertTrue((Path(replaced["run"]["sync_backup"]) / "data.txt").exists())
 
     def test_sync_destination_merge_and_excludes_win(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         output = self.root / "chosen-output"
         output.mkdir()
         (output / "keep.txt").write_text("keep")
-        result = self.jobs.job_sync(run["run_id"], includes=["*.log", "results/***"],
+        result = authorized_sync(self.jobs, run["run_id"], includes=["*.log", "results/***"],
             excludes=["stderr.log"], destination=str(output), overwrite="merge",
             compress=True, checksum=False, timeout=45)
         self.assertTrue(result["ok"])
@@ -399,11 +441,11 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_sync_invalid_options_and_input_destination_rejected(self):
         run = self.prepare()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         for options in [{"mode": "bad"}, {"timeout": 0}, {"checksum": "yes"},
                         {"excludes": ["../outside"]}, {"destination": str(self.source)}]:
             with self.subTest(options=options), self.assertRaises(ValueError):
-                self.jobs.job_sync(run["run_id"], **options)
+                authorized_sync(self.jobs, run["run_id"], **options)
 
     def test_arrays_and_state_directory_as_input_rejected(self):
         (self.source / "job.sh").write_text("#!/bin/bash\n#SBATCH --array=0-10\ntrue\n")
@@ -425,8 +467,8 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertNotEqual(runs[0]["remote_dir"], runs[1]["remote_dir"])
         for index, run in enumerate(runs, 1):
             self.assertEqual({f["path"] for f in run["manifest"]}, {"job.sh", f"test{index}.gjf"})
-            self.assertTrue(self.jobs.job_submit(run["run_id"])["ok"])
-            result = self.jobs.job_sync(run["run_id"])
+            self.assertTrue(authorized_submit(self.jobs, run["run_id"])["ok"])
+            result = authorized_sync(self.jobs, run["run_id"])
             self.assertTrue(result["ok"], result)
             self.assertEqual(Path(result["run"]["output_dir"]), self.source)
             self.assertEqual((self.source / f"test{index}.chk").read_text(), "checkpoint")
@@ -435,34 +477,34 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_project_return_preserves_inputs_and_handles_output_collisions(self):
         run = self.project_task()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         (self.source / "test1.log").write_text("previous result")
-        result = self.jobs.job_sync(run["run_id"])
+        result = authorized_sync(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertEqual((self.source / "test1.log").read_text(), "previous result")
         self.assertFalse((self.source / "test1.chk").exists())
-        self.assertTrue(self.jobs.job_sync(run["run_id"], overwrite="merge")["ok"])
-        result = self.jobs.job_sync(run["run_id"], includes=["test1.gjf"], overwrite="merge")
+        self.assertTrue(authorized_sync(self.jobs, run["run_id"], overwrite="merge")["ok"])
+        result = authorized_sync(self.jobs, run["run_id"], includes=["test1.gjf"], overwrite="merge")
         self.assertFalse(result["ok"])
         self.assertIn("overwrite an input", result["error"])
         self.assertEqual((self.source / "test1.gjf").read_text(), "input card")
         with self.assertRaises(ValueError):
-            self.jobs.job_sync(run["run_id"], overwrite="replace")
+            authorized_sync(self.jobs, run["run_id"], overwrite="replace")
 
     def test_project_failed_cache_cleanup_is_scoped_and_locked(self):
         run = self.project_task()
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         self.transfer.fail_download = True
-        failed = self.jobs.job_sync(run["run_id"])
+        failed = authorized_sync(self.jobs, run["run_id"])
         attempt = Path(failed["run"]["output_dir"])
         self.assertTrue(attempt.is_relative_to(self.root / ".hpc-mcp-sync"))
         (attempt / "partial.log").write_text("partial")
-        preview = self.jobs.job_cache_cleanup(run["run_id"], 0)
+        preview = authorized_cleanup(self.jobs, 'cache', run["run_id"], 0)
         self.assertEqual(preview["bytes"], 7)
         self.assertTrue(attempt.exists())
         with self.jobs.history.lock(run["run_id"]), self.assertRaisesRegex(ValueError, "another"):
-            self.jobs.job_cache_cleanup(run["run_id"], 0, False)
-        self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+            authorized_cleanup(self.jobs, 'cache', run["run_id"], 0, False)
+        authorized_cleanup(self.jobs, 'cache', run["run_id"], 0, False)
         self.assertFalse((self.root / ".hpc-mcp-sync").exists())
         self.assertTrue(Path(run["snapshot_dir"]).exists())
         self.assertTrue((self.source / "test1.gjf").exists())
@@ -470,22 +512,22 @@ class JobLifecycleTests(unittest.TestCase):
 
     def test_project_cache_and_result_symlinks_rejected(self):
         run = self.project_task(outputs=["nested/result.log"])
-        self.jobs.job_submit(run["run_id"])
+        authorized_submit(self.jobs, run["run_id"])
         remote = Path(run["remote_dir"])
         (remote / "nested").mkdir()
         (remote / "nested/result.log").write_text("result")
         outside = self.root / "outside"
         outside.mkdir()
         (self.source / "nested").symlink_to(outside, target_is_directory=True)
-        result = self.jobs.job_sync(run["run_id"])
+        result = authorized_sync(self.jobs, run["run_id"])
         self.assertFalse(result["ok"])
         self.assertFalse((outside / "result.log").exists())
-        self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+        authorized_cleanup(self.jobs, 'cache', run["run_id"], 0, False)
         (self.root / ".hpc-mcp-sync").symlink_to(outside, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink"):
-            self.jobs.job_sync(run["run_id"])
+            authorized_sync(self.jobs, run["run_id"])
         with self.assertRaisesRegex(ValueError, "symlink"):
-            self.jobs.job_cache_cleanup(run["run_id"], 0, False)
+            authorized_cleanup(self.jobs, 'cache', run["run_id"], 0, False)
 
     def test_project_preparation_requires_explicit_output_selection(self):
         for options in ({}, {"outputs": []}, {"outputs": ["*.log"], "output_mode": "all"}):

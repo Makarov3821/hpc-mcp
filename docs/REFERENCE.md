@@ -23,6 +23,16 @@ CLI 为 setup-flow-create/get/list/events/resume/step/confirm/close/cleanup；cr
 
 `handler_runner_status(probe=true)` 读取配置、权限和实际隔离能力；`handler_runner_configure(settings,confirmation_note)` 完整替换配置，要求用户确认。默认 isolated，仅 Linux bubblewrap+seccomp；不可用不会静默降级。trusted 显示宿主文件／网络权限。配置项、范围、依赖固定及 CLI 见 [执行器说明](HANDLER_RUNNER.md)；settings_get 返回相同配置，prepare／依赖派生保存执行证据。
 
+## 任务执行授权
+
+| 工具 | 参数／行为 |
+| --- | --- |
+| job_submission_plan | run_id,automation=null；冻结脚本／输入 SHA、完整设置、目录与输出／自动动作范围，返回 review_token；不上传 |
+| job_authorize | run_id,review_token,confirmation_note；用户确认当前精确计划，变更／跨任务 token 拒绝；不提交 |
+| job_revoke_authorization | run_id；撤销未来 submit／sync／cleanup 权限，不取消已在集群的作业 |
+
+所有提交入口（含 template_run）共用门禁；只读状态／历史／回执恢复保留。automation 字段、CLI、可收窄的同步范围、清理许可、worker token 与旧任务迁移见 [提交授权说明](SUBMISSION_AUTHORIZATION.md)。workflow_start 为具体执行计划批准自动提交；派生快照需新确认。
+
 ## 集群引导与应用插件
 
 首次启动无应用处理方法；新接入使用 setup_flow 业务流程，cluster_probe/configure 保留只读检查／手动配置兼容入口，settings_get 提供参数。script_inspect 只分析用户来源，持久报告可用 onboarding_report 读取；软件发现最多 module avail，不搜索磁盘。profile_get/list 仅保留旧配置历史，旧 profile 写入、准备和验证工具已撤出 MCP。
@@ -118,7 +128,7 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 | `template_list(limit=50, offset=0)` | 按名称分页列出每个模板的最新版本 |
 | `template_get(name, version=null)` | 读取指定版本；省略版本取最新；校验存储内容的 SHA-256 |
 | `template_plan(name, cluster, input_dir, parameters=null, version=null, project_root=null)` | 绑定参数、校验调度器、生成脚本并准备输入快照；不提交，返回 `plan_id=run_id` |
-| `template_run(plan_id)` | 提交已经固定的计划，沿用提交锁、防重与不明回执恢复；不重新读取最新模板 |
+| `template_run(plan_id)` | 提交已通过 job_submission_plan／job_authorize 授权的计划，沿用提交锁、防重与不明回执恢复；不重新读取最新模板 |
 
 每个计划保存模板名、版本、定义校验值、完整定义、参数和实际脚本；准备快照变化会阻止提交，原目录变化不会改变快照。模板更新对已有计划无影响；每次重新规划创建新 run。模板操作不自动修改计算输入卡，也不扫描其他任务。目录回传与缓存规则保持不变。
 
@@ -215,7 +225,7 @@ hpc-mcp sync RUN_ID --mode filtered --include 'results/***' --layout direct \
 
 ## 操作可靠性
 
-prepare 创建本地输入快照，不执行脚本或上传。submit 在校验快照、上传与远程 SHA-256 校验后提交，覆盖作业名、工作目录和调度日志路径。
+prepare 创建本地输入快照，不执行脚本或上传。submit 先要求 job_submission_plan／job_authorize 的当前授权，再在校验快照、上传与远程 SHA-256 校验后提交，覆盖作业名、工作目录和调度日志路径。
 调度 CPU、内存、队列、时限等资源配置目前写在实际脚本中，不提供任意 scheduler_options，也不改写程序内部路径。
 上传的脚本和文件名不能含控制字符或反斜杠；符号链接和明显的数组指令被拒绝。运行数据、内部回执和状态目录不可作为普通输入。
 
@@ -238,7 +248,7 @@ SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理�
 | --- | --- |
 | `monitor_watch` | run_ids（1..500）、auto_sync=true、sync_options=null、cleanup_policy=null、reset=false；固定有效同步规则、目标、覆盖及限制，仅登记、不启动 |
 | `monitor_unwatch` | run_id；停用后续动作，保留记录；已登记同步 worker 或已开始清理可以完成，不取消远程任务 |
-| `monitor_start` | settings=null；省略重用已保存设置，启动时捕获当前集群配置。重复启动返回 already_running，修改设置须先停；返回 starting 后查询状态 |
+| `monitor_start` | settings=null；省略重用已保存监控设置，保存配置文件路径并在动作前重读集群配置。重复启动返回 already_running，修改监控设置须先停；返回 starting 后查询状态 |
 | `monitor_stop` | 无参数；请求优雅退出，不等待长查询；用 status 确认停止，已有 detached 同步 worker 独立完成 |
 | `monitor_status` | limit=50（1..500）、offset=0；本地读取 alive、heartbeat、状态、最新循环、监控策略、进度、错误、最后调度观测和日志路径，不访问 SSH |
 | `monitor_notifications` | after_id=0、limit=50（1..500）；返回终态整理、重试、需处理事件；保存 next_after_id 为下次游标，cursor_gap 表示旧通知已淘汰 |
@@ -263,7 +273,7 @@ SSH 强制免交互和主机身份校验，身份参数在 OpenSSH 配置管理�
 | notifications_limit | 1000，10..10000；只淘汰通知，不删除作业历史 |
 | input_cache_cleanup | null 默认关闭；可显式设置 older_than_seconds（默认 86400）及 max_cache_bytes（默认 10 GiB），均非负整数 |
 
-watch 的 sync_options 同 job_sync，省略项在登记时解析并固定；stable_only 强制 true。已有 worker 会被接管查询，不重复启动；进程中断后沿已有操作记录与 resume 规则恢复，目标冲突保持报错。已有完整下载必须与请求规则匹配并逐文件 SHA 校验才复用；结果被用户修改后不会默默重新覆盖，进入 needs_attention。更新集群配置后重新启动协调器以刷新捕获配置；已准备 run 的目标身份保护仍生效。
+watch 的 sync_options 同 job_sync，省略项在登记时解析并固定；stable_only 强制 true。已有 worker 会被接管查询，不重复启动；进程中断后沿已有操作记录与 resume 规则恢复，目标冲突保持报错。已有完整下载必须与请求规则匹配并逐文件 SHA 校验才复用；结果被用户修改后不会默默重新覆盖，进入 needs_attention。协调器／worker 动作前重读配置文件；设置或授权变化使自动动作拒绝并进入 needs_attention，重新计划／确认／登记后恢复。已有目标身份保护仍生效。
 
 cleanup_policy 默认 `{sync_cache_age_seconds:null, storage_categories:[], storage_age_seconds:604800}`，全部关闭。显式年龄为非负整数；storage_categories 只接受 snapshot、sync_history、old_outputs。每次清理都要求新确认终态、完整且非空的已下载结果及本地 SHA 校验；沿用作业锁与原有路径保护，保留最新项目结果和历史。snapshot 包括原始／有效输入，删除后不能重放。大结果校验会产生本地读取开销；输入内容缓存的全局保留策略是独立、显式启用的本地机制，不依赖远程查询。没有自动远程删除功能。
 
@@ -302,7 +312,7 @@ gaussian_prepare 不再内置。安装并激活 gaussian handler 后，重启从
 
 失败暂存只有在完整选项及源清单 fingerprint 一致时复用；拒绝 symlink，私有 `.hpc-mcp-transfer-partial` 从不安装成结果。源变化或选项变化创建新暂存。传输完成后重新查询状态并比对源大小／mtime，再安装结果；这不是远程原子快照，元数据不变的并发写入仍可能无法识别。`stable_only=true` 要求前后都确认终态，否则保留缓存返回失败。默认允许运行中同步，但结果是 partial。`sync_transfer_stats` 可报告 rsync 统计的 transferred_bytes／reused_bytes；`sync_progress` 报告暂存或已安装大小，不代表网络实时速度。
 
-`job_sync_start(run_id,options={})` 接受公开 job_sync 参数对象，启动独立进程，返回持久 operation_id。`job_sync_operation(operation_id)` 返回 queued/running/succeeded/failed/interrupted、progress 和 result/error。一个 run 仅允许一个已登记活动操作；中断后先查询再重试。重启 MCP 不终止既有 worker；机器关机不会继续传输，未结束操作需核查后恢复，不会自动提交计算任务。操作历史保存配置快照，不存 SSH 密钥；run.last_sync_operation 保存最近操作编号，agent 重启后可从 job_get 找回。
+`job_sync_start(run_id,options={})` 接受公开 job_sync 参数对象，启动独立进程，返回持久 operation_id。`job_sync_operation(operation_id)` 返回 queued/running/succeeded/failed/interrupted、progress 和 result/error。一个 run 仅允许一个已登记活动操作；中断后先查询再重试。重启 MCP 不终止既有 worker；机器关机不会继续传输，未结束操作需核查后恢复，不会自动提交计算任务。操作历史保存配置快照、配置路径和精确授权 token；执行时重读配置并检查 token，不存 SSH 密钥；run.last_sync_operation 保存最近操作编号，agent 重启后可从 job_get 找回。
 
 CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max-file-bytes`、`--max-total-bytes`、`--reserve-bytes`、`--stable-only`；`sync-start RUN_ID --options JSON`，`sync-operation OPERATION_ID` 查询状态。
 
@@ -328,13 +338,14 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 | MCP 工具 | 参数与动作 |
 | --- | --- |
 | workflow_plan | `name, run_ids, dependencies=null, limits=null`；名称 1..100 字符，1..500 个未提交 prepared run，至多 1000 条依赖；登记后禁止直接 job_submit。返回禁用计划与 review_token。 |
+| workflow_review | `workflow_id`；暂停并冻结当前具体执行快照，返回新 review_token，不授权；派生输入／配置变化后先审阅再确认。 |
 | workflow_start | `workflow_id, review_token, confirmation_note`；凭据须匹配固定计划，记录明确用户授权，note 1..4096 字符。仅启用，不立即提交或启动进程。 |
 | workflow_pause | `workflow_id`；停止后续放行，已预留的上传／提交可能完成；不取消作业、不停止同步、不释放登记。恢复用 workflow_start。 |
 | workflow_retry | `workflow_id, task_ids`；任务标识为初始 run_id，仅重置未提交准备／上传任务，清除依赖传输跟踪；不启用暂停计划。调度器拒绝或计算失败须准备新任务。 |
 | workflow_status | `workflow_id=null, limit=50, offset=0`；指定编号返回完整状态，否则分页列表，limit 1..500。只读本地。 |
 | workflow_tick | `workflow_id`；已授权且到期才推进，可查询、恢复回执、启动依赖同步和提交。查询结局未知不释放在途容量；提交结局未知不盲目重交。 |
 
-限制在计划中固定，可通过 settings_get 发现；修改限制需准备新任务与计划，不改写正在执行的计划。
+限制在计划中固定，可通过 settings_get 发现；派生快照形成后暂停为 awaiting_authorization，workflow_review 展示具体输入与脚本，再 workflow_start 确认新 token。旧 token 不继承权限。修改限制仍需新计划。
 
 | limits 字段 | 默认与范围 |
 | --- | --- |
@@ -347,7 +358,7 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 | max_submit_attempts | 3，1..500；失败不自动反复提交，显式 retry 重置 |
 | max_handoff_bytes | 1073741824，1..1099511627776；一次派生输入的依赖文件总量，同时受原 max_input_bytes、同步容量和磁盘余量限制 |
 
-协调器按监控全局周期推进一个到期工作流，共享状态查询预算；回执恢复、上传和同步 worker 的命令不属于这个状态预算。监控开启本身不授权提交，只有 workflow_start 启用的计划可放行。monitor_stop 停止协调器推进但保留工作流启用状态；彻底禁止后续手动／后台放行须 workflow_pause。协调器使用启动时的集群配置，新配置需停止后重新启动。
+协调器按监控全局周期推进一个到期工作流，共享状态查询预算；回执恢复、上传和同步 worker 的命令不属于这个状态预算。监控开启本身不授权提交，只有 workflow_start 启用的计划可放行。monitor_stop 停止协调器推进但保留工作流启用状态；彻底禁止后续手动／后台放行须 workflow_pause。协调器与 worker 重新读取配置文件；生效设置改变后旧授权失效，需重新审阅确认。
 
 依赖条目：`{run_id: 子任务初始编号, parent_run_id: 父任务初始编号, condition: ..., files: [...]}`。内部父任务来自本计划，外部父任务须已确认提交；拒绝循环。所有条件要求新鲜成功终态：scheduler_succeeded 仅调度成功；application_succeeded 另外检查 Gaussian 应用日志；files_ready 必须明确映射文件。应用判据只接受带 Gaussian 应用元数据的父任务，其他应用尚未适配。
 

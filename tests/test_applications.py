@@ -177,9 +177,9 @@ class ApplicationTests(unittest.TestCase):
             app='hello_'+scheduler;self.register(app,scheduler)
             (self.fixture.source/'input.txt').write_text('computed\n')
             run=self.apps.prepare(app,scheduler,str(self.fixture.source),str(self.fixture.root))['run']
-            self.assertTrue(self.jobs.job_submit(run['run_id'])['ok'])
-            self.assertTrue(self.jobs.job_submit(run['run_id'])['already_processed'])
-            synced=self.jobs.job_sync(run['run_id'],layout='direct')
+            self.assertTrue(test_jobs.authorized_submit(self.jobs, run['run_id'])['ok'])
+            self.assertTrue(test_jobs.authorized_submit(self.jobs, run['run_id'])['already_processed'])
+            synced=test_jobs.authorized_sync(self.jobs, run['run_id'],layout='direct')
             self.assertTrue(synced['ok'],synced)
             self.assertEqual((self.fixture.source/'result.txt').read_text(),'computed\n')
             self.assertFalse((self.fixture.root/'.hpc-mcp-sync'/run['run_id']).exists())
@@ -287,7 +287,7 @@ class ApplicationTests(unittest.TestCase):
         for content,status in [('Normal termination\n','passed'),('Normal termination\nError termination\n','failed')]:
             (self.fixture.source/'input.txt').write_text(content)
             run=self.apps.prepare('hello_lsf','lsf',str(self.fixture.source),str(self.fixture.root))['run']
-            self.jobs.job_submit(run['run_id'])
+            test_jobs.authorized_submit(self.jobs, run['run_id'])
             result=self.apps.validate(run['run_id'])
             self.assertEqual(result['status'],status)
             self.assertEqual(result['scheduler_state'],'succeeded')
@@ -329,7 +329,7 @@ class ApplicationTests(unittest.TestCase):
         abandoned=self.jobs.job_cancel(run['run_id'])
         self.assertTrue(abandoned['local_only'])
         self.apps.remove('gaussian',False)
-        with self.assertRaisesRegex(ValueError,'abandoned'):self.jobs.job_submit(run['run_id'])
+        with self.assertRaisesRegex(ValueError,'abandoned'):test_jobs.authorized_submit(self.jobs, run['run_id'])
         self.assertFalse((self.fixture.root/'submissions').exists())
 
 

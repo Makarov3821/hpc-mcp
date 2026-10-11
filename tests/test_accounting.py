@@ -77,7 +77,7 @@ class AccountingLifecycleTests(unittest.TestCase):
 
     def submitted(self, scheduler='slurm'):
         run = self.fixture.prepare(scheduler)
-        self.jobs.job_submit(run['run_id'])
+        test_jobs.authorized_submit(self.jobs, run['run_id'])
         return self.jobs.history.get(run['run_id'])
 
     def test_refresh_persists_and_failed_refresh_retains_stale_evidence(self):

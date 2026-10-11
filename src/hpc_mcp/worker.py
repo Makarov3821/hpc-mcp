@@ -15,11 +15,13 @@ def main():
     try:
         # Parent releases the short reservation lock just after launching this process.
         import time
-        jobs = JobService({operation["cluster"]["name"]: Cluster(**operation["cluster"])}, history.root)
+        jobs = JobService({operation["cluster"]["name"]: Cluster(**operation["cluster"])}, history.root, config_path=operation.get("config_path"))
+        if not operation.get("authorization_token"):
+            raise ValueError("legacy sync operation requires a fresh authorized operation")
         operation_update(history, operation_id, state="running", pid=os.getpid())
         for attempt in range(50):
             try:
-                result = jobs.job_sync(operation["run_id"], _operation_id=operation_id, **operation["options"])
+                result = jobs.job_sync(operation["run_id"], _operation_id=operation_id, _authorization_token=operation["authorization_token"], **operation["options"])
                 break
             except ValueError as error:
                 if "another submit/recover/sync" not in str(error) or attempt == 49:

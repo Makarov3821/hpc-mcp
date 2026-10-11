@@ -56,6 +56,8 @@ def materialize(service, value, task_id, handoffs, limit):
         return
     jobs = service.jobs
     original = jobs.history.get(task['source_run_id'])
+    from .submission import receipt
+    receipt(jobs, original)
     inputs = Path(original['snapshot_dir'])
     if file_manifest(inputs) != original['manifest']:
         raise ValueError('original prepared snapshot changed')
@@ -226,6 +228,14 @@ def advance(service, value, limits, budget_override):
                 task.update(stage='needs_attention', last_error='submission attempts exhausted')
                 continue
             materialize(service, value, task_id, handoffs, limits.max_handoff_bytes)
+            concrete = value['plan'].get('execution_plans', {}).get(task_id)
+            if not concrete or concrete['run_id'] != task['run_id']:
+                task.update(stage='awaiting_authorization', last_error='New dependency snapshot needs workflow_review and user confirmation.')
+                service._save(value)
+                service._control(value['workflow_id'], enabled=False)
+                value['enabled'] = False
+                break
+
             task['reservation'] = uuid.uuid4().hex
             task['attempts'] += 1
             task['stage'] = 'submitting'
