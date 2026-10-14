@@ -3,7 +3,7 @@
 from pathlib import Path
 import inspect
 import tempfile
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -18,7 +18,7 @@ class RecordingServer:
         self.tools = {}
         self.instructions = kwargs.get("instructions")
 
-    def tool(self):
+    def tool(self, **metadata):
         def register(function):
             self.tools[function.__name__] = function
             return function
@@ -29,8 +29,11 @@ class ToolSettingsTests(unittest.TestCase):
     def test_discover_configure_and_prepare_through_tool_handlers(self):
         module = ModuleType("mcp.server")
         module.MCPServer = RecordingServer
+        annotation_module = ModuleType('mcp.types')
+        annotation_module.ToolAnnotations = SimpleNamespace
         with tempfile.TemporaryDirectory() as directory, patch.dict(
-            "sys.modules", {"mcp": ModuleType("mcp"), "mcp.server": module}
+            "sys.modules", {"mcp": ModuleType("mcp"), "mcp.server": module,
+                            "mcp.types": annotation_module}
         ):
             root = Path(directory)
             clusters = {}

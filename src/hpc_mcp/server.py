@@ -17,6 +17,7 @@ from .accounting import AccountingService
 
 def create_server(service: ClusterService, jobs: JobService, config: ConfigManager | None = None):
     from mcp.server import MCPServer
+    from mcp.types import ToolAnnotations
 
     if config is not None:
         jobs.config_path = config.path
@@ -42,11 +43,20 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         "Request an independent fresh-context reviewer for original code and handler changes. Record its report verbatim; revise and install a new version until review passes before user confirmation. "
         "User confirmation through setup_flow_confirm (or legacy unmanaged application_activate) is separate from real compute-node validation. "
         "Call handler_runner_status during installation; isolation is required by default. Never silently configure trusted mode when unavailable; explain host access and obtain explicit user permission. "
-        "Use registered application handlers for daily prepare; job_submit is separate. Never execute original submission wrappers. "
-        "For full task orchestration, approve auto_submit/auto_sync in job_submission_plan, then explicitly "
-        "job_lifecycle_start and monitor_start. job_lifecycle_get separates scheduler, application and sync "
-        "results and gives a pending action. No criterion means unverified; failures preserve data. "
+        "Use registered application handlers through batch_plan for daily calculations. Never execute original submission wrappers. "
+        "Low-level job_submission_plan/job_authorize/job_submit and job_lifecycle tools are for existing "
+        "runs, explicit prepare-only/manual requests, diagnostics or advanced dependency workflows. "
+        "No criterion means unverified; failures preserve data. "
         "Resume only inspected failed steps; never resubmit a confirmed job. "
+        "Default to batch_plan for every new daily calculation, even for a single input (one-item tasks list), "
+        "with explicit tasks and an idempotent request_key, "
+        "one user confirmation of its batch token, then batch_start and occasional batch_status. "
+        "Use application_get to discover handler parameters; choose tasks.application instead of "
+        "calling application_prepare or an application-specific prepare tool for daily submissions. "
+        "Batch tools prepare, authorize and enroll tasks internally; do not loop individual prepare/submit/check "
+        "calls or repeatedly poll. Keep inputs from one request in one batch per cluster/project; "
+        "do not create a separate batch per input. Do not re-prepare existing run_ids to switch routes. "
+        "Unknown applications still need a user template. "
         "Preview application_remove before deleting; preserve user computation data and history."))
     templates = TemplateService(jobs)
     updates = UpdateService(jobs.history.root)
@@ -59,6 +69,84 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     applications = ApplicationService(jobs)
     from .lifecycle import LifecycleService
     lifecycles = LifecycleService(jobs)
+    from .batch import BatchService, BatchError
+    batches = BatchService(jobs)
+
+    def batch_call(method, *args):
+        from .submission import SubmissionError
+        try:
+            return method(*args)
+        except (BatchError, ApplicationError, SubmissionError) as error:
+            return {'ok': False, 'error': error.code, 'message': str(error)}
+        except (ValueError, OSError) as error:
+            return {'ok': False, 'error': 'batch_invalid_request', 'message': str(error)}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def batch_plan(request_key: str, name: str, cluster: str, project_root: str,
+                   tasks: list[dict[str, Any]], automation: dict | None = None,
+                   limits: dict | None = None, start_monitor: bool = True,
+                   monitor_settings: dict | None = None, compact: bool = True) -> dict[str, Any]:
+        """Default entrypoint for daily computation, including one input. Plan locally; never submit.
+
+        tasks: {task_id?,application,input_path,parameters?,version?,automation?} or
+        {task_id?,input_dir,script,outputs,input_files?,output_exclude?,input_exclude?,max_input_bytes?,automation?}.
+        1..500 unique inputs. Full batches require auto_submit/auto_sync=true (defaults); deletion off.
+        Reuse request_key ONLY for identical requests/recovery. Unknown apps need a user template.
+        Any preparation/output collision blocks the whole batch. compact=false returns all scripts/hashes.
+        start_monitor/settings are frozen here; batch_start uses them after explicit confirmation.
+        """
+        return batch_call(batches.plan, request_key, name, cluster, project_root, tasks,
+            automation, limits, start_monitor, monitor_settings, compact)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                                             idempotentHint=True, openWorldHint=True))
+    def batch_start(batch_id: str, review_token: str, confirmation_note: str) -> dict[str, Any]:
+        """Confirm the exact complete batch once, enroll lifecycles and enable its workflow/coordinator.
+
+        Requires real user confirmation of inputs, scripts, resources, return and cleanup scope.
+        Does not synchronously wait for jobs. Repeated calls never resubmit or silently rearm failures.
+        Per-run authorization, isolated handlers and receipt recovery remain enforced internally.
+        """
+        return batch_call(batches.start, batch_id, review_token, confirmation_note)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def batch_status(batch_id: str, limit: int = 50, offset: int = 0,
+                     include_completed: bool = False) -> dict[str, Any]:
+        """Read local batch counts and paginated task mapping, exceptions and pending actions.
+
+        No SSH, scheduler query or writes. Defaults prioritize non-completed/failed tasks; counts
+        cover all tasks. include_completed=true exposes completed task IDs and output locations.
+        Scheduler, application and sync outcomes stay separate; complete can remain unverified.
+        """
+        return batch_call(batches.status, batch_id, limit, offset, include_completed)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def batch_pause(batch_id: str) -> dict[str, Any]:
+        """Pause future batch releases and its monitors; already running jobs/workers continue."""
+        return batch_call(batches.pause, batch_id)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                                             idempotentHint=False, openWorldHint=True))
+    def batch_resume(batch_id: str, task_ids: list[str] | None = None) -> dict[str, Any]:
+        """After inspection retry explicitly selected failed steps under existing exact approval.
+
+        Omit task_ids only to resume an explicitly paused whole batch. Others remain held after a
+        partial pause/resume. No confirmed job is resubmitted. Revoked/changed approval needs review/start.
+        """
+        return batch_call(batches.resume, batch_id, task_ids)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                             idempotentHint=False, openWorldHint=False))
+    def batch_review(batch_id: str, compact: bool = True) -> dict[str, Any]:
+        """Pause and refreeze existing snapshots after configuration change; grant no approval.
+
+        Confirm the returned new token with batch_start. Add tasks or change scopes in a new batch;
+        repeated batch_plan reads the original frozen plan and does not mutate it or regenerate inputs.
+        """
+        return batch_call(batches.review, batch_id, compact)
 
     @server.tool()
     def job_lifecycle_start(run_id: str) -> dict[str, Any]:
@@ -69,12 +157,14 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         """
         return job_call(lifecycles.start, run_id)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def job_lifecycle_get(run_id: str) -> dict[str, Any]:
         """Read persisted progress, separate scheduler/application/sync results and pending action."""
         return lifecycles.get(run_id)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def job_lifecycle_list(limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """List enrolled task lifecycles without submitting or querying the cluster."""
         return lifecycles.list(limit, offset)
@@ -256,7 +346,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     def application_prepare(application: str, cluster: str, input_path: str, project_root: str,
                             parameters: dict | None = None, version: int | None = None,
                             compact: bool = True) -> dict[str, Any]:
-        """Run a registered handler and prepare one private task. Unknown apps require a template.
+        """Low-level prepare-only/manual entrypoint; daily calculations use batch_plan, even one input.
 
         Handler only generates; MCP owns snapshot/submit/status/sync. No source input rewrites.
         Use application_get for parameter schema. compact=false/job_get returns full frozen script.
@@ -337,7 +427,8 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         """
         return workflows.retry(workflow_id, task_ids)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def workflow_status(workflow_id: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Read workflow tasks, initial/effective run IDs, authorization, reservations and errors.
 
@@ -469,7 +560,8 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         """
         return monitor.status(limit, offset)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def monitor_notifications(after_id: int = 0, limit: int = 50) -> dict[str, Any]:
         """Read local completion/retry/attention events for agents to present; no external messages.
 
@@ -542,6 +634,13 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     "max_steps_per_cycle": "monitor.max_jobs_per_cycle",
                     "validation_log_limit_bytes": 2097152,
                     "cleanup_requires": "scheduler succeeded, application passed, verified retained outputs"},
+                "batch": {"entrypoints": ["batch_plan", "batch_start", "batch_status"],
+                    "default_submission_route": "batch", "single_task_uses_batch": True,
+                    "controls": ["batch_pause", "batch_resume", "batch_review"],
+                    "max_tasks": 500, "max_request_bytes": 1048576, "max_plan_bytes": 4194304,
+                    "auto_submit": True, "auto_sync": True, "start_monitor": True,
+                    "cleanup_enabled_by_default": False, "status_detail_limit": 50,
+                    "explicit_inputs_only": True, "unknown_application_requires_template": True},
                 "script_resources": asdict(Resources()),
                 "script_execution": {"launcher": {"kind": "srun", "arguments": []},
                     "container": {"runtime": "apptainer", "image": "/remote/trusted.sif", "binds": [], "gpu": None},
@@ -782,7 +881,7 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
                     output_exclude: list[str] | None = None, input_exclude: list[str] | None = None,
                     max_input_bytes: int | None = None, project_root: str | None = None,
                     input_files: list[str] | None = None) -> dict[str, Any]:
-        """Create a local immutable input snapshot and reviewable submission plan.
+        """Low-level script preparation for manual requests; daily calculations use batch_plan.
 
         Script is relative to input_dir. Outputs are rsync include patterns.
         Does not upload or execute the script. Rejects symlinks and arrays.
@@ -831,12 +930,14 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         """
         return job_call(jobs.job_submit, run_id)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def job_list(cluster: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Read persistent local execution history with pagination."""
         return jobs.job_list(cluster, limit, offset)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
+                                             destructiveHint=False, openWorldHint=False))
     def job_get(run_id: str) -> dict[str, Any]:
         """Read a saved plan, file manifests and execution events without querying the cluster."""
         return jobs.job_get(run_id)
@@ -922,7 +1023,10 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
             values = parameters.model_dump(exclude_none=True, exclude_unset=True) if parameters is not None else None
             return application_prepare(app, cluster, input_path, project_root, values, bound_versions.get(cluster, record["version"]), compact)
         prepare.__annotations__['parameters'] = model | None
-        server.add_tool(prepare, name=app + '_prepare', description='Prepare using registered '+app+' handler. No submit; version selected from confirmed registry.')
+        server.add_tool(prepare, name=app + '_prepare', description=(
+            'Low-level prepare-only/manual entrypoint for ' + app + '; daily calculations use '
+            'batch_plan with application="' + app + '", even for one input. No submit; '
+            'version selected from confirmed registry.'))
     for entry in applications.list()['applications']:
         if entry.get('active') and not entry.get('removing'):
             loaded = application_call(applications.get, entry['application'], entry['active'])

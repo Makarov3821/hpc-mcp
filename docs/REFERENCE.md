@@ -120,6 +120,8 @@ OpenMP 线程通过 environment 显式设置；整数 OMP_NUM_THREADS 不得超�
 
 ## 计算生命周期与恢复
 
+日常计算默认 [batch 入口](BATCH.md)，单个输入同样用一项 tasks：batch_plan(request_key,name,cluster,project_root,tasks,automation=null,limits=null,start_monitor=true,monitor_settings=null,compact=true)；batch_start(batch_id,review_token,confirmation_note)；只读 batch_status(batch_id,limit=50,offset=0,include_completed=false)。控制工具为 batch_pause、batch_resume(task_ids=null)、batch_review(compact=true)。最多 500 项、请求 1 MiB、计划 4 MiB。明确清单、每项独立快照、一次批准和后台归位；删除默认关闭，未知应用仍需用户脚本。低层工具保留手动／仅准备／诊断／已有 run 和高级依赖场景。SDK annotations 区分只读状态与生成／执行副作用，但不承诺跳过客户端审批。
+
 以下工具复用提交授权、monitor 和同步 worker。默认不启用，状态在 run.lifecycle 与事件中持久保存；查看不连接集群。完整流程与恢复示例见 [LIFECYCLE.md](LIFECYCLE.md)。
 
 | MCP 工具 | 行为 |

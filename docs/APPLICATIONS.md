@@ -35,7 +35,7 @@ MCP 默认通过 Linux bubblewrap／seccomp 隔离的 Python `-I -S -B` 执行 h
 
 响应：`script`（完整提交脚本文本）、非空相对路径 `input_files`、非空同步规则 `outputs`，可选 `resources` 对象。提交文件允许没有 shebang；保留用户原格式。MCP 保存为 `hpc-mcp-job.sh`，此文件名不能与输入冲突。helper 文件可通过 `__file__` 所在目录读取，不能依赖原 CWD 或隐式导入用户环境。
 
-handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、不扫描提交其他任务或留下后台进程。用户选择一项输入／任务目录即生成独立 run；多项通过多个准备调用再交 workflow 管理，不 packing。输出大小预算覆盖 stdout/stderr。单卡 handler 若需读取辅助文件，应选择明确任务目录；input_files 仍决定后续上传清单。
+handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、不扫描提交其他任务或留下后台进程。日常默认 batch_plan，由 MCP 内部逐项调用 handler 并生成独立 run，单个输入也使用一项 tasks；不 packing，不让 agent 循环 prepare。输出大小预算覆盖 stdout/stderr。单卡 handler 若需读取辅助文件，应选择明确任务目录；input_files 仍决定后续上传清单。
 
 ## 生命周期与独立审阅循环
 
@@ -46,7 +46,7 @@ handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、�
 3. agent 启动全新上下文的独立 reviewer。只传原脚本、handler、manifest 和本接口契约；不共享改造对话、作者解释或既有结论。reviewer 只静态分析，不执行脚本，不修改文件。
 4. `application_review_submit(application, version, review_token, report)`：原样提交独立报告。revise 时 agent 按意见修改并 install 新版本，再启动新的独立 reviewer；重复直到 pass。报告缺项、会话相同、非全新上下文声明、pass 仍有差异／未知项都会拒绝。未通过禁止激活。
 5. 用户确认后 `application_activate(..., confirmation_note)`：核对集群与调度器，保存设置校验值并激活。不能编造用户确认。
-6. 重启 MCP 加载 `<application>_prepare` 及参数 schema；通用 application_prepare 可立即使用。prepare 冻结版本／参数／脚本，job_submit 单独上传提交。
+6. 重启 MCP 加载 `<application>_prepare` 及参数 schema；日常默认 batch_plan，任务的 tasks[].application 填已注册名称。通过 application_get 发现参数，单个输入同样走 batch。低层 application_prepare／专属 prepare 工具保留仅准备和手动操作；prepare 冻结版本／参数／脚本，job_submit 单独上传提交。
 7. 用户授权真实小任务后，`application_validate(run_id)` 查询状态、同步稳定日志并核对显式判据；不提交新任务。
 
 报告格式（每项 checks 必须提供具体分析证据）：

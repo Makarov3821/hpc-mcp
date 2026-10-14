@@ -419,7 +419,8 @@ class ApplicationService:
             self.event('application_activated', {'application': application, 'version': version})
             return {'ok': True, 'application': record, 'restart_required': True}
 
-    def prepare(self, application, cluster, input_path, project_root, parameters=None, version=None):
+    def prepare(self, application, cluster, input_path, project_root, parameters=None, version=None,
+                _run_id=None, _batch_context=None):
         self.jobs.refresh_clusters()
         with self.locked():
             index = self.read_index()
@@ -438,7 +439,7 @@ class ApplicationService:
             if not local.exists() or not local.is_relative_to(project):
                 raise ValueError('input must exist within project_root')
             directory = local if local.is_dir() else local.parent
-            run_id = 'r_' + uuid.uuid4().hex
+            run_id = _run_id or 'r_' + uuid.uuid4().hex
             remote = target.work_root.rstrip('/') + '/' + run_id
             request = {'input_path': str(local), 'input_dir': str(directory), 'input_name': local.name if local.is_file() else None,
                        'remote_dir': remote, 'scheduler': target.scheduler, 'parameters': parameters or {}}
@@ -450,7 +451,8 @@ class ApplicationService:
                 generation_context={'mode': 'application-handler-v1', 'spec': {'resources': result.get('resources', {})}, 'runner': result['_execution']},
                 template_context={'application_plugin': {'application': application, 'version': record['version'],
                     'review_token': record['review_token'], 'parameters': bindings, 'request': request,
-                    'root': str(self.root), 'cluster_settings': asdict(target)}},
+                    'root': str(self.root), 'cluster_settings': asdict(target)},
+                    **({'batch': _batch_context} if _batch_context else {})},
                 application_context={'kind': application, 'plugin_version': record['version']},
                 prepared_run_id=run_id, trusted_handler=True)
             return response

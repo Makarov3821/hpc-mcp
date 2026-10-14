@@ -176,7 +176,7 @@ def advance(service, value, limits, budget_override):
             task.update(stage='submitted' if recovered['run']['phase'] == 'submitted' else 'needs_attention',
                         last_error=None if recovered.get('ok') else recovered.get('error'))
             continue
-        if task['stage'] == 'needs_attention':
+        if task['stage'] in ('needs_attention', 'paused'):
             continue
         if run['phase'] == 'rejected':
             task.update(stage='needs_attention', last_error='scheduler rejected submission; prepare a new run')
@@ -254,7 +254,7 @@ def advance(service, value, limits, budget_override):
     service._save(value)
     live = any(t['stage'] != 'complete' and jobs.history.get(t['run_id'])['phase'] in
                ('submitted', 'submitting', 'submission_unknown', 'uploading') for t in value['tasks'].values())
-    if not live and all(task['stage'] in ('complete', 'blocked', 'needs_attention') for task in value['tasks'].values()):
+    if not live and all(task['stage'] in ('complete', 'blocked', 'needs_attention', 'paused') for task in value['tasks'].values()):
         value['finished_at'] = service.clock()
         service._save(value)
         service._control(value['workflow_id'], enabled=False)

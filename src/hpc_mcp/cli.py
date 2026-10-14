@@ -273,10 +273,58 @@ def main():
     lifecycle_list = sub.add_parser('lifecycle-list')
     lifecycle_list.add_argument('--limit', type=int, default=50)
     lifecycle_list.add_argument('--offset', type=int, default=0)
+    batch_plan = sub.add_parser('batch-plan')
+    batch_plan.add_argument('request_key')
+    batch_plan.add_argument('name')
+    batch_plan.add_argument('cluster')
+    batch_plan.add_argument('--project-root', required=True)
+    batch_plan.add_argument('--tasks-file', required=True)
+    batch_plan.add_argument('--automation-file')
+    batch_plan.add_argument('--limits', default='{}')
+    batch_plan.add_argument('--start-monitor', action=argparse.BooleanOptionalAction, default=True)
+    batch_plan.add_argument('--monitor-settings', help='JSON coordinator settings')
+    batch_plan.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
+    batch_start = sub.add_parser('batch-start')
+    batch_start.add_argument('batch_id'); batch_start.add_argument('review_token')
+    batch_start.add_argument('--confirmation-note', required=True)
+    batch_status = sub.add_parser('batch-status')
+    batch_status.add_argument('batch_id'); batch_status.add_argument('--limit', type=int, default=50)
+    batch_status.add_argument('--offset', type=int, default=0)
+    batch_status.add_argument('--include-completed', action='store_true')
+    sub.add_parser('batch-pause').add_argument('batch_id')
+    batch_resume = sub.add_parser('batch-resume')
+    batch_resume.add_argument('batch_id'); batch_resume.add_argument('--task-ids', nargs='+')
+    batch_review = sub.add_parser('batch-review')
+    batch_review.add_argument('batch_id')
+    batch_review.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
     args, unknown = parser.parse_known_args()
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action.startswith('batch-'):
+            from .jobs import JobService
+            from .batch import BatchService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            batches = BatchService(JobService(clusters, args.state_dir, config_path=args.config))
+            action = args.action.removeprefix('batch-')
+            if action == 'plan':
+                data = batches.plan(args.request_key, args.name, args.cluster, args.project_root,
+                    json.loads(Path(args.tasks_file).read_text()),
+                    json.loads(Path(args.automation_file).read_text()) if args.automation_file else None,
+                    json.loads(args.limits), args.start_monitor,
+                    json.loads(args.monitor_settings) if args.monitor_settings else None, args.compact)
+            elif action == 'start':
+                data = batches.start(args.batch_id, args.review_token, args.confirmation_note)
+            elif action == 'status':
+                data = batches.status(args.batch_id, args.limit, args.offset, args.include_completed)
+            elif action == 'resume':
+                data = batches.resume(args.batch_id, args.task_ids)
+            elif action == 'review':
+                data = batches.review(args.batch_id, args.compact)
+            else:
+                data = batches.pause(args.batch_id)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            sys.exit(0 if data.get('ok') else 1)
         if args.action.startswith('lifecycle-'):
             from .jobs import JobService
             from .lifecycle import LifecycleService

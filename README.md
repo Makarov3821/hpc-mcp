@@ -117,7 +117,7 @@ agent 首次改造用户源码：普通 LSF／Slurm 脚本作为生成目标，�
 3. setup_flow_step(application_review_request) 返回固定材料；agent 启动全新上下文 reviewer，不共享改造对话或作者结论。
 4. setup_flow_step(application_review_submit) 原样保存报告；revise 时按意见修订、安装新版本再审阅。没有独立 reviewer 能力时等待，不能模拟报告。
 5. pass 后展示 confirmation_plan，用户核对，再 setup_flow_confirm 激活。配置／报告变化或旧 token 不能授权；重启 MCP 刷新应用工具。
-6. 日常 application_prepare 准备独立 run，展示 job_submission_plan，用户确认后 job_authorize 再 job_submit；真实小任务完成后 application_validate 核对明确判据。激活不等于真实验证通过。
+6. 日常默认 batch_plan → 用户确认 → batch_start → 按需 batch_status，单个输入也使用一项 tasks；批次内部通过注册 handler 准备独立 run。真实小任务完成后核对应用判据，激活不等于真实验证通过。application_prepare／job_submit 等低层接口用于明确的仅准备、手动操作或诊断。
 
 未注册软件返回 application_not_registered，并请求用户提供模板。不会猜测软件路径、MPI 环境或 Slurm 转换；未迁移的 packing／批量扫描明确排除，多任务用多个独立 run 与 workflow 管理。
 
@@ -212,11 +212,13 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 ## 5. 验收 MCP 工具与作业流程
 
+**日常计算默认使用 batch，单个输入也一样。** agent 生成输入卡后，同一请求、集群与项目的输入放入同一个 tasks 列表，一次 batch_plan；核对整批脚本／输入哈希、回传与自动动作，用户确认一个 token 后 batch_start。MCP 内部逐项准备、授权和登记，默认启动／复用后台协调器完成提交、跟踪、检查和归位，agent 只需按需 batch_status，无需逐个 prepare／submit／check，也不要为每张卡单独建批次。每项仍有独立 run 和远程目录；准备失败或输出冲突阻止整批提交，重复请求不会重交。完整参数、定向恢复和 CLI 见 [批量计算](docs/BATCH.md)。低层工具用于用户明确要求的手动操作、仅准备、已有 run 恢复或高级依赖流程；已有 run 不重新准备成新批次。
+
 需要 agent 退出后仍能推进完整任务时，先在 job_submission_plan 中明确批准 auto_submit／auto_sync 及回传、清理范围，再 job_authorize、job_lifecycle_start、monitor_start。用 job_lifecycle_get 读取持久进度和 pending_action；遇到 needs_attention 检查 failed_step 后 job_lifecycle_resume，已确认作业不重交。调度状态、应用判据和同步结果分别返回；无判据为 unverified，失败保留诊断数据，自动清理只在调度成功、判据通过且输出校验后执行。详见 [计算生命周期与恢复](docs/LIFECYCLE.md)。
 
 每个新会话先调用 `update_check`，若 `update_available=true`，向用户提示上游提交并用 `update_plan` 获取更新命令；网络失败代表未知，不应说已是最新。然后从客户端调用 `settings_get`、`cluster_list`、`cluster_check`、`cluster_info`。`settings_get` 暴露完整设置模板、配置路径和状态路径；`cluster_configure` 可持久化更新集群，立即作用于当前服务。
 
-用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：
+以下为安装验收或明确手动诊断的低层流程；日常默认使用上面的 batch。用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：
 
 1. `job_prepare(cluster, input_dir, script)`：返回本地快照和计划，不提交；检查上传清单与实际提交命令。
 2. `job_submission_plan(run_id, automation=null)`：展示实际脚本、输入哈希、完整集群设置、远程目录和同步／清理权限；用户核对后 `job_authorize(run_id, review_token, confirmation_note)`。
@@ -281,7 +283,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 ## 6. 低层工具、同步与监控
 
-日常应用任务使用已注册 handler。用户明确指定脚本和资源时，可使用 `script_generate`、`job_prepare_generated` 或版本化模板；参数与边界集中在 [接口参考](docs/REFERENCE.md)。
+日常应用任务默认通过 batch_plan 调用已注册 handler，明确提供提交脚本时也可使用 batch 的脚本任务。用户明确要求底层生成或模板操作时，可使用 `script_generate`、`job_prepare_generated` 或版本化模板；参数与边界集中在 [接口参考](docs/REFERENCE.md)。
 
 现有脚本先用 `script_inspect` 只读分析，核对 SHA、行号与未解析项，再编写 handler 或导入低层模板。分析不执行原源码，Python 提交器不能直接作为批处理脚本提交。示例见 [脚本分析](examples/inspection/) 和 [MPI／GPU／容器资源](examples/resources/)；远程路径与队列须按站点调整。
 
@@ -294,7 +296,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 需要反复使用声明资源的模板时，可参考 [LSF](examples/templates/gaussian-lsf.json)／[Slurm](examples/templates/gaussian-slurm.json) 定义。`template_import` 保存新版本，`template_plan` 固定参数和输入快照；核对计划后 `template_run` 才提交。后续状态、日志与回传使用该计划的 run_id。
 
-`gaussian_inspect` 只读分析输入卡；注册 handler 后使用 `application_prepare` 或 `gaussian-prepare`。回传日志后用 `gaussian_result(run_id, log_path="test1.log")` 分析终止证据，或用 `application_validate` 检查插件判据。输入卡修改由 agent 明确完成，应用结果与调度状态分开记录。
+`gaussian_inspect` 只读分析输入卡；注册 handler 后，默认用 batch_plan 的 application="gaussian" 任务，即使只有一张卡。application_prepare／gaussian-prepare 为仅准备或手动操作保留。回传日志后用 `gaussian_result(run_id, log_path="test1.log")` 分析终止证据，或用 `application_validate` 检查插件判据。输入卡修改由 agent 明确完成，应用结果与调度状态分开记录。
 
 ### 同步与存储
 

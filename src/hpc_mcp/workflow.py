@@ -103,7 +103,8 @@ class WorkflowService:
             'stages': {stage: sum(t['stage'] == stage for t in v['tasks'].values())
                        for stage in sorted({t['stage'] for t in v['tasks'].values()})}} for v in values]}
 
-    def plan(self, name, run_ids, dependencies=None, limits=None, automation=None):
+    def plan(self, name, run_ids, dependencies=None, limits=None, automation=None,
+             _workflow_id=None, _permissions_by_run=None):
         from .submission import build, automation as permission_policy
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise ValueError('workflow name must be nonempty and at most 100 characters')
@@ -167,7 +168,7 @@ class WorkflowService:
             targets = [m['target'] for e in requirements for m in e['files']]
             if len(set(targets)) != len(targets) or any(a.startswith(b + '/') for a in targets for b in targets if a != b):
                 raise ValueError('duplicate or overlapping handoff targets')
-        workflow_id = 'w_' + uuid.uuid4().hex
+        workflow_id = _workflow_id or 'w_' + uuid.uuid4().hex
         downloads = {}
         for requirements in parents.values():
             for edge in requirements:
@@ -177,7 +178,8 @@ class WorkflowService:
                 downloads.setdefault(edge['parent_run_id'], set()).update(names)
         def permissions(rid):
             run = self.jobs.history.get(rid)
-            values = permission_policy(self.jobs, run, automation) if rid in runs else {}
+            selected = dict(automation or {}, **(_permissions_by_run or {}).get(rid, {}))
+            values = permission_policy(self.jobs, run, selected) if rid in runs else {}
             extra = list(values.get('extra_sync', []))
             if downloads.get(rid):
                 extra.append(dict(mode='filtered', includes=sorted(downloads[rid]),
@@ -262,7 +264,7 @@ class WorkflowService:
                     db.execute('UPDATE workflows SET data=? WHERE id=?', (json.dumps(value), workflow_id))
         return self.get(workflow_id)
 
-    def start(self, workflow_id, review_token, confirmation_note):
+    def start(self, workflow_id, review_token, confirmation_note, _enable=True):
         from .submission import build, authorize_locked
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
             raise ValueError('record explicit user authorization for this automatic submission plan')
@@ -288,7 +290,7 @@ class WorkflowService:
                                              submission_plan_token=token, submission_authorization=None)
                     authorize_locked(self.jobs, self.jobs.history.get(rid), token, confirmation_note,
                         {'workflow_id': workflow_id, 'review_token': review_token})
-                self._control(workflow_id, enabled=True, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
+                self._control(workflow_id, enabled=_enable, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
         return self.get(workflow_id)
 
     def pause(self, workflow_id):

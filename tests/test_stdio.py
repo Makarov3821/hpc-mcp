@@ -17,6 +17,56 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipIf(Client is None, 'install mcp extra for real stdio integration')
 class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_tools_annotations_and_durable_start_in_both_modes(self):
+        for mode in ('auto', 'legacy'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                project = root / 'project'
+                tasks = []
+                for name in ('B', 'D'):
+                    task_dir = project / name
+                    task_dir.mkdir(parents=True)
+                    (task_dir / 'job.sh').write_text("#!/bin/bash\nprintf 'result' > result.txt\n")
+                    tasks.append({'task_id': name, 'input_dir': str(task_dir),
+                        'script': 'job.sh', 'outputs': ['result.txt'], 'input_files': ['job.sh']})
+                params = StdioServerParameters(command=sys.executable,
+                    args=['-m', 'hpc_mcp', '--config', str(root / 'clusters.toml'),
+                          '--state-dir', str(root / 'state'), 'serve'],
+                    env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')), cwd=str(root))
+                async def call(client, name, args):
+                    response = await client.call_tool(name, args)
+                    self.assertFalse(response.is_error, response.content)
+                    return response.structured_content
+                async with Client(params, mode=mode) as client:
+                    tools = {t.name: t for t in (await client.list_tools()).tools}
+                    for name in ('plan', 'start', 'status', 'pause', 'resume', 'review'):
+                        self.assertIn('batch_' + name, tools)
+                    self.assertTrue(tools['batch_status'].annotations.read_only_hint)
+                    self.assertFalse(tools['batch_plan'].annotations.read_only_hint)
+                    self.assertTrue(tools['batch_start'].annotations.open_world_hint)
+                    await call(client, 'cluster_configure', {'cluster': 'lab', 'settings': {
+                        'ssh_host': 'unused', 'scheduler': 'lsf', 'work_root': '/tmp/batch-example'}})
+                    value = await call(client, 'batch_plan', {'request_key': 'stdio-batch',
+                        'name': 'Two tasks', 'cluster': 'lab', 'project_root': str(project),
+                        'tasks': tasks, 'start_monitor': False, 'compact': False})
+                    self.assertTrue(value['ok'], value)
+                    self.assertEqual(len(value['plan']['workflow_plan']['runs']), 2)
+                    rejected = await call(client, 'batch_start', {'batch_id': value['batch_id'],
+                        'review_token': 'wrong', 'confirmation_note': 'Synthetic approval'})
+                    self.assertEqual(rejected['error'], 'batch_token_invalid')
+                    started = await call(client, 'batch_start', {'batch_id': value['batch_id'],
+                        'review_token': value['review_token'], 'confirmation_note': 'Synthetic complete approval'})
+                    self.assertEqual(started['stage'], 'running')
+                async with Client(params, mode=mode) as client:
+                    status = await call(client, 'batch_status', {'batch_id': value['batch_id']})
+                    self.assertEqual(status['counts'], {'ready': 2})
+                    for task in status['tasks']:
+                        run = await call(client, 'job_get', {'run_id': task['run_id']})
+                        self.assertEqual(run['run']['phase'], 'prepared')
+                    await call(client, 'batch_pause', {'batch_id': value['batch_id']})
+                    paused = await call(client, 'batch_status', {'batch_id': value['batch_id']})
+                    self.assertEqual(paused['counts'], {'paused': 2})
+
     async def test_discovery_tools_and_restart_in_modern_and_legacy_modes(self):
         for mode in ('auto', 'legacy'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:

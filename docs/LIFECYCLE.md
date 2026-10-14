@@ -2,7 +2,9 @@
 
 生命周期复用 JobService、monitor、同步 worker 和授权门禁，按独立 run 记录进度，不重新生成脚本、不调用 LLM。默认关闭；准备、授权、启用与启动后台进程分开。历史保存在 agent 的 state/history.sqlite3，agent 退出后可读取和恢复。
 
-## 单任务
+日常默认使用 [batch 入口](BATCH.md)，包括仅一个输入的一项批次；由批次内部登记并推进生命周期。下面的低层工具用于明确的手动操作、仅准备、诊断、已有 run 恢复或高级依赖流程。
+
+## 低层单任务操作
 
 1. 用注册 application_prepare 或 job_prepare 创建独立输入快照，指定 project_root 和 outputs。
 2. job_submission_plan 的 automation 设置 auto_submit=true、auto_sync=true，核对实际脚本、输入 SHA、集群、输出目标／覆盖和清理范围；用户确认后 job_authorize。已手动提交的任务只需批准 auto_sync。
