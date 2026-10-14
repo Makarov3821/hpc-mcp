@@ -46,7 +46,7 @@ handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、�
 3. agent 启动全新上下文的独立 reviewer。只传原脚本、handler、manifest 和本接口契约；不共享改造对话、作者解释或既有结论。reviewer 只静态分析，不执行脚本，不修改文件。
 4. `application_review_submit(application, version, review_token, report)`：原样提交独立报告。revise 时 agent 按意见修改并 install 新版本，再启动新的独立 reviewer；重复直到 pass。报告缺项、会话相同、非全新上下文声明、pass 仍有差异／未知项都会拒绝。未通过禁止激活。
 5. 用户确认后 `application_activate(..., confirmation_note)`：核对集群与调度器，保存设置校验值并激活。不能编造用户确认。
-6. 重启 MCP 加载 `<application>_prepare` 及参数 schema；日常默认 batch_plan，任务的 tasks[].application 填已注册名称。通过 application_get 发现参数，单个输入同样走 batch。低层 application_prepare／专属 prepare 工具保留仅准备和手动操作；prepare 冻结版本／参数／脚本，job_submit 单独上传提交。
+6. 日常默认 batch_plan，任务的 tasks[].application 填已注册名称，单个输入同样走 batch；通过 application_get 发现参数。默认 batch 工具模式不注册专属 prepare 工具。显式 serve --tool-profile advanced 并重启时才加载 `<application>_prepare` 及类型 schema；通用 application_prepare 同样属于高级工具。低层 prepare 冻结版本／参数／脚本，job_submit 单独上传提交；CLI 保留。
 7. 用户授权真实小任务后，`application_validate(run_id)` 查询状态、同步稳定日志并核对显式判据；不提交新任务。
 
 报告格式（每项 checks 必须提供具体分析证据）：

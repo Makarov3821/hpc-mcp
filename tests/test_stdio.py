@@ -41,6 +41,16 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     tools = {t.name: t for t in (await client.list_tools()).tools}
                     for name in ('plan', 'start', 'status', 'pause', 'resume', 'review'):
                         self.assertIn('batch_' + name, tools)
+                    from hpc_mcp.tool_catalog import ADVANCED_TOOLS
+                    self.assertTrue(ADVANCED_TOOLS.isdisjoint(tools))
+                    for name in ('setup_flow_create', 'application_get', 'cluster_probe',
+                                 'job_get', 'job_cancel', 'job_logs', 'monitor_stop'):
+                        self.assertIn(name, tools)
+                    catalog = (await call(client, 'settings_get', {}))['tool_catalog']
+                    self.assertEqual(catalog['profile'], 'batch')
+                    self.assertFalse(catalog['advanced_enabled'])
+                    unavailable = await client.call_tool('job_prepare', {})
+                    self.assertTrue(unavailable.is_error)
                     self.assertTrue(tools['batch_status'].annotations.read_only_hint)
                     self.assertFalse(tools['batch_plan'].annotations.read_only_hint)
                     self.assertTrue(tools['batch_start'].annotations.open_world_hint)
@@ -67,12 +77,69 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     paused = await call(client, 'batch_status', {'batch_id': value['batch_id']})
                     self.assertEqual(paused['counts'], {'paused': 2})
 
+    async def test_registered_single_input_uses_batch_and_advanced_tools_require_explicit_profile(self):
+        import test_applications
+        from hpc_mcp.config import ConfigManager
+        from hpc_mcp.history import History
+        for mode in ('auto', 'legacy'):
+            fixture = test_applications.ApplicationTests()
+            fixture.setUp()
+            try:
+                fixture.register()
+                root = fixture.fixture.root
+                config = root / 'clusters.toml'
+                ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf',
+                    'work_root': str(fixture.fixture.remote)})
+                base_args = ['-m', 'hpc_mcp', '--config', str(config),
+                    '--state-dir', str(fixture.jobs.history.root), 'serve']
+                params = StdioServerParameters(command=sys.executable, args=base_args,
+                    env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')), cwd=str(root))
+                async def call(client, name, args):
+                    response = await client.call_tool(name, args)
+                    self.assertFalse(response.is_error, response.content)
+                    return response.structured_content
+                async with Client(params, mode=mode) as client:
+                    tools = {t.name for t in (await client.list_tools()).tools}
+                    self.assertNotIn('gaussian_prepare', tools)
+                    self.assertNotIn('application_prepare', tools)
+                    details = await call(client, 'application_get', {'application': 'gaussian'})
+                    self.assertIn('cpus', details['application']['manifest']['parameters']['properties'])
+                    value = await call(client, 'batch_plan', {'request_key': 'one-card',
+                        'name': 'Single input', 'cluster': 'lsf', 'project_root': str(root),
+                        'tasks': [{'application': 'gaussian', 'input_path': str(fixture.card)}],
+                        'start_monitor': False})
+                    self.assertTrue(value['ok'], value)
+                    self.assertEqual(len(value['tasks']), 1)
+                    started = await call(client, 'batch_start', {'batch_id': value['batch_id'],
+                        'review_token': value['review_token'], 'confirmation_note': 'Synthetic one-input approval'})
+                    self.assertEqual(started['task_count'], 1)
+                    forbidden = await client.call_tool('job_submit', {'run_id': value['tasks'][0]['run_id']})
+                    self.assertTrue(forbidden.is_error)
+                advanced = StdioServerParameters(command=sys.executable,
+                    args=base_args + ['--tool-profile', 'advanced'],
+                    env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')), cwd=str(root))
+                async with Client(advanced, mode=mode) as client:
+                    tools = {t.name for t in (await client.list_tools()).tools}
+                    self.assertIn('gaussian_prepare', tools)
+                    self.assertIn('application_prepare', tools)
+                    self.assertIn('job_submit', tools)
+                    self.assertIn('batch_start', tools)
+                    catalog = (await call(client, 'settings_get', {}))['tool_catalog']
+                    self.assertEqual(catalog['profile'], 'advanced')
+                    denied = await client.call_tool('job_submit', {'run_id': value['tasks'][0]['run_id']})
+                    self.assertTrue(denied.is_error)  # Workflow ownership still guards submission.
+                history = History(fixture.jobs.history.root)
+                self.assertEqual(history.get(value['tasks'][0]['run_id'])['phase'], 'prepared')
+                self.assertFalse((root / 'submissions').exists())
+            finally:
+                fixture.doCleanups()
+
     async def test_discovery_tools_and_restart_in_modern_and_legacy_modes(self):
         for mode in ('auto', 'legacy'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root=Path(directory); config=root/'clusters.toml'; state=root/'state'; project=root/'project'
                 project.mkdir(); (project/'water.gjf').write_text('# hf/sto-3g\n\nwater\n\n0 1\nH 0 0 0\n\n')
-                params=StdioServerParameters(command=sys.executable,args=['-m','hpc_mcp','--config',str(config),'--state-dir',str(state),'serve'],
+                params=StdioServerParameters(command=sys.executable,args=['-m','hpc_mcp','--config',str(config),'--state-dir',str(state),'serve','--tool-profile','advanced'],
                     env=dict(os.environ,PYTHONPATH=str(ROOT/'src')),cwd=str(root))
                 async def call(client,name,args={}):
                     result=await client.call_tool(name,args)

@@ -50,3 +50,22 @@
 - 按用户要求，日常计算统一默认 batch，单个输入也使用一项批次。同一请求、集群与项目内的输入合并为一个明确清单，不逐卡建批次，不循环调用 prepare／submit／check。
 - MCP instructions、通用／专属 prepare 描述、settings_get.batch 与 README／应用／生命周期说明对齐；参数通过 application_get 发现。
 - 低层接口用于明确仅准备、手动／诊断、已有 run 恢复和高级依赖；已有任务不为了切换路线重新准备。客户端仍决定实际工具选择，默认指引不取消用户确认或客户端审批。
+
+## Phase 12：统一计算入口与工具模式
+
+目标：默认 MCP 只提供 batch 计算路线，单个和多个输入统一处理；减少 agent 选择逐项计算管线的机会。内部单任务模块和 CLI 保留，不重写执行、授权或历史机制。
+
+- Phase 11 已提交为 b738ea5（Add batch planning and confirmed background execution），本轮未 push。
+- `serve` 默认 batch 模式，隐藏单任务准备／授权／提交／同步、模板提交、高级 workflow、旧 profile 读取和手动作业清理；隐藏工具不仅不展示，tools/call 也不可调用。
+- `serve --tool-profile advanced` 显式恢复完整 MCP 接口与专属应用 prepare。模式在启动时固定，变更需重启；不自动切换，不修改客户端配置，CLI 和内部服务不受目录曝光影响。
+- 安装／接入／适配、注册参数发现、历史、取消、日志、回执恢复、记账及全局监控默认保留。应用是否注册与 MCP 工具模式独立，默认通过 batch_plan 内部使用注册 handler。
+- settings_get.tool_catalog 暴露当前模式、精确隐藏列表和高级启动选项。README、BATCH、REFERENCE、APPLICATIONS 与 SETUP_FLOWS 对齐，不再声称默认注册专属 prepare 工具。
+- 验收：默认目录及直接调用拒绝，单张注册输入通过 batch，同目录多任务沿用批量流程；advanced 完整接口与授权门禁保留；真实 SDK modern／legacy 和重启跨模式共享历史。
+
+状态：已实现并通过验收；按用户要求作为独立 commit 提交，未 push。
+
+### Phase 12 验收记录
+
+- 全量 **298 项测试通过**，包含真实 SDK modern／legacy 默认目录、隐藏工具直接调用拒绝、已注册单卡通过 batch，以及跨连接 advanced 模式恢复专属 prepare／完整工具且保留 workflow 所有权门禁。
+- 既有批量后台执行、CLI、隔离、授权和恢复测试均通过；compileall、git diff --check 通过。未连接真实集群。
+- 升级后重启 MCP 连接刷新目录；默认不修改客户端配置，不停后台作业，不迁移或删除记录。本记录随 Phase 12 的独立实现 commit 提交，未 push。

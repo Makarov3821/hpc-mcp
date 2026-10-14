@@ -91,7 +91,9 @@ def main():
     sub.add_parser("monitor-unwatch").add_argument("run_id")
     for action in ("check", "info"):
         sub.add_parser(action).add_argument("cluster")
-    sub.add_parser("serve", help="Run MCP over stdio (requires the mcp extra)")
+    serve = sub.add_parser("serve", help="Run MCP over stdio (requires the mcp extra)")
+    serve.add_argument('--tool-profile', choices=('batch', 'advanced'), default='batch',
+        help='Daily unified batch catalog (default), or full low-level compatibility tools')
     for action in ("update-check", "update-plan"):
         update = sub.add_parser(action, help="Check upstream or print safe update commands")
         update.add_argument("--force", action="store_true")
@@ -475,7 +477,8 @@ def main():
         if args.action == "serve":
             from .jobs import JobService
             from .server import create_server
-            create_server(service, JobService(service.clusters, args.state_dir, config_path=args.config), config).run(transport="stdio")
+            create_server(service, JobService(service.clusters, args.state_dir, config_path=args.config),
+                config, tool_profile=args.tool_profile).run(transport="stdio")
             return
         if args.action == "list":
             data = {"ok": True, "clusters": service.list_clusters()}

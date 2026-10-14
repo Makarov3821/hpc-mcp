@@ -37,6 +37,10 @@
 
 `test_lifecycle` 使用离线 LSF／Slurm 命令与真实本地 rsync。覆盖显式批准与启用、CLI 退出后后台提交／归位、重启恢复、多目录输出隔离、上传／同步失败与定向恢复、SSH 丢响应防重交、撤销及扩大权限拒绝、workflow 提交所有权、日志标记通过／失败／缺失、调度失败诊断回传、无判据不冒充通过、清理失败只重试清理、本地输出变化停止。SDK modern／legacy 检查生命周期工具发现与未授权启动拒绝。该套件不证明真实集群软件的科学正确性，真机仍须用用户确认的小任务验收。
 
+## Phase 12 统一工具模式验收
+
+默认 batch 模式在真实 SDK modern／legacy tools/list 中不暴露低层计算工具，直接 tools/call 隐藏工具失败。已注册 Gaussian 的单卡通过 batch_plan／start，参数通过 application_get 读取；跨连接改为显式 advanced 后，完整工具与专属 prepare 恢复，既有历史共享，直接提交仍受 workflow 所有权阻止。CLI 命令和后台批次服务继续使用原核心，不依赖 MCP 工具目录。
+
 ## Phase 11 批量入口验收
 
 test_batch 验证明确输入清单、一次批准、独立任务归位、同目录 Gaussian 卡、固定应用版本、LSF／Slurm、准备失败阻止整批、request_key 冲突、快照／workflow／启动中断恢复、输出冲突、配置变化重新审阅、批准撤销、暂停后定向恢复及防重交。真实 detached coordinator 和 rsync worker 验证仅 batch_start 后即可完成整批，客户端不逐项调用。SDK modern／legacy stdio 检查六个批量工具、准确只读／执行注解、跨 token 拒绝和服务重启读取。确认说明与独立 review 报告为合成测试证据，不代表真实用户批准；不连接真实集群。

@@ -24,6 +24,9 @@ class RecordingServer:
             return function
         return register
 
+    def remove_tool(self, name):
+        del self.tools[name]
+
 
 class ToolSettingsTests(unittest.TestCase):
     def test_discover_configure_and_prepare_through_tool_handlers(self):
@@ -40,7 +43,7 @@ class ToolSettingsTests(unittest.TestCase):
             service = ClusterService(clusters)
             jobs = JobService(clusters, root / "state")
             config = ConfigManager(root / "clusters.toml", clusters)
-            server = create_server(service, jobs, config)
+            server = create_server(service, jobs, config, tool_profile='advanced')
             template = server.tools["settings_get"]()["settings"]
             self.assertNotIn("name", template)
             server.tools["cluster_configure"]("lab", {

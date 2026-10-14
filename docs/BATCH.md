@@ -2,7 +2,9 @@
 
 日常计算默认使用 batch_plan → 用户确认 → batch_start → 按需 batch_status；单个输入也用一项 tasks。同一请求、集群与项目内的多个输入归入同一批次，不为每张卡分别建批次。批量入口在 MCP 内部复用注册 handler、独立 run、workflow、生命周期和同步 worker；agent 不必逐个 prepare／authorize／submit／check。客户端是否审批每次调用仍由客户端控制，批量入口减少调用次数，不取消 Phase 10 的权限检查。
 
-低层工具保留给用户明确要求的仅准备、手动提交、调试、已有 run 恢复和高级依赖流程。已存在 run 不重新准备以切换路线。此默认通过 MCP instructions、工具描述、settings_get 和 README 告知客户端，不强制禁用低层接口；agent 实际选工具仍受客户端及用户指令影响。
+默认 serve 的 batch 模式只暴露统一计算路线，隐藏逐项 prepare／authorize／submit／sync、模板提交和高级 workflow 工具；隐藏工具也不能直接 tools/call。安装／适配管理、参数发现、历史、取消和诊断继续可用。单任务后端与 CLI 保留；用户明确需要仅准备、手动提交、已有 run 恢复或高级依赖时，可用 CLI 或显式启动 serve --tool-profile advanced 恢复完整 MCP 工具集。已存在 run 不重新准备以切换路线。
+
+settings_get.tool_catalog 返回模式、隐藏列表和高级启动选项。模式变更需要重启客户端连接，不删除配置或历史，不改变后台任务；advanced 模式也不放宽提交／同步／清理权限。工具模式控制 MCP 接口曝光，不是本地进程安全隔离，也不取消客户端审批。
 
 ## 明确提供任务清单
 

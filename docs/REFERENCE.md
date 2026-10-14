@@ -1,6 +1,12 @@
 # Agent 接口与设置参考
 
-MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；基础工具与已激活应用工具通过 `tools/list` 暴露参数 schema，应用工具数量随注册表变化。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，方便 agent 与程序客户端消费；工具通过 `tools/list` 暴露参数 schema，默认计算入口统一为 batch，注册应用参数由 application_get 发现。advanced 模式额外暴露专属应用工具，数量随注册表变化。协议验证见 `tests/test_stdio.py`，需要安装官方 MCP extra；验证只操作临时配置、快照、模板和历史，不访问集群。
+
+## 工具模式与统一计算入口
+
+默认 `serve`／`serve --tool-profile batch`：单个或多个任务统一走 batch_plan、batch_start、batch_status，管理控制为 batch_pause／resume／review。单任务准备／授权／提交／同步、模板提交、高级 workflow、旧 profile 读取与手动作业清理仅在 `serve --tool-profile advanced` 暴露；下面列出的完整参考包含这些高级接口，CLI 始终保留。切换需要重启连接，不迁移状态或重交任务。
+
+安装／集群接入／脚本适配、application_list/get、历史、取消、日志、回执恢复、用量及全局监控仍默认可用。settings_get.tool_catalog 提供精确隐藏列表；不自动切换高级模式。默认隐藏工具不仅不显示，tools/call 也不可调用；已有后台服务直接复用核心模块，不受目录曝光影响。
 
 ## 接入／适配流程基础设施
 
@@ -50,7 +56,7 @@ CLI 为 setup-flow-create/get/list/events/resume/step/confirm/close/cleanup；cr
 | application_remove | application,dry_run=true；预览／完整删除，非终态任务引用阻止删除，不删计算数据 |
 | application_cleanup | older_than_seconds=86400,dry_run=true；清理暂存及无活动引用的非当前版本 |
 
-重启后从 manifest 注册 <application>_prepare 工具，参数 schema 可发现；当前连接中的专属工具固定启动时版本，通用分发使用当前应用／集群绑定版本。修改插件文件会拒绝调用，更新走新版本；已有任务与依赖派生固定原版本。固定管理操作不调用 LLM；agent 首次改造源码并启动独立 reviewer，修改后重复审阅。参阅 [完整插件契约](APPLICATIONS.md)。
+advanced 模式重启后从 manifest 注册 <application>_prepare 工具，参数 schema 可发现；当前连接中的专属工具固定启动时版本，通用分发使用当前应用／集群绑定版本。默认 batch 模式通过 application_get 发现参数，batch_plan 内部调用注册 handler。修改插件文件会拒绝调用，更新走新版本；已有任务与依赖派生固定原版本。固定管理操作不调用 LLM；agent 首次改造源码并启动独立 reviewer，修改后重复审阅。参阅 [完整插件契约](APPLICATIONS.md)。
 
 CLI 对应 application-list/get/install/update/review-request/review-submit/activate/prepare/validate/remove/cleanup。review-request 的 --author-session、review-submit 的 --report-file、activate 的 --note 必填；remove／cleanup --apply 才删除。gaussian-prepare CLI 是注册 gaussian 的兼容调用名，不能传旧 spec／changes。旧 profile CLI 写入／执行明确报迁移错误；不自动迁移或重交历史任务。
 
@@ -309,7 +315,7 @@ CLI：monitor-watch RUN_ID... [--no-auto-sync] [--sync-options JSON] [--cleanup-
 
 `gaussian_inspect(input_file)` 是现有只读输入分析，保留资源、checkpoint、分段和未解析行；不能注册执行方法。`gaussian_result(run_id,log_path?,max_bytes=1048576)` 分析同步且哈希一致的 Gaussian 日志，非旧 Gaussian 准备任务应明确 log_path。应用结果与调度状态独立。
 
-gaussian_prepare 不再内置。安装并激活 gaussian handler 后，重启从 manifest 注册此方法；参数为 cluster,input_path,project_root,parameters=null,compact=true，schema 暴露原生成参数。不接受旧 spec／changes。默认输入规范由 agent 完成，checkpoint 依赖通过声明输入和已有文件交接处理。
+gaussian_prepare 不再内置。安装并激活 gaussian handler 后，advanced 模式重启从 manifest 注册此方法；参数为 cluster,input_path,project_root,parameters=null,compact=true，schema 暴露原生成参数。默认模式使用 batch_plan 的 Gaussian 任务。不接受旧 spec／changes。默认输入规范由 agent 完成，checkpoint 依赖通过声明输入和已有文件交接处理。
 
 ## 同步预检、续传与异步操作
 

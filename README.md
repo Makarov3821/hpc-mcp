@@ -212,13 +212,17 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 ## 5. 验收 MCP 工具与作业流程
 
+默认 `serve` 使用 `batch` 工具模式：单个和多个输入统一走 batch_plan／batch_start／batch_status，不暴露 application_prepare、专属 prepare、逐项 job_submit／job_sync、模板提交或高级 workflow 等替代计算入口。安装／适配管理、参数发现、历史、取消、诊断和全局监控仍可用。settings_get.tool_catalog 返回当前模式与隐藏列表。CLI 和内部单任务模块继续保留，任务历史与后台进程不变。
+
+仅在用户明确需要手动操作或高级依赖时，使用 CLI，或将服务启动参数改为 `serve --tool-profile advanced` 并重启 MCP；该模式恢复完整工具集，仍执行原有授权检查。模式在启动时固定，agent 不应为了绕过失败自动切换。升级后旧客户端的工具缓存需要重启刷新；已有 run 直接恢复，不重新提交。
+
 **日常计算默认使用 batch，单个输入也一样。** agent 生成输入卡后，同一请求、集群与项目的输入放入同一个 tasks 列表，一次 batch_plan；核对整批脚本／输入哈希、回传与自动动作，用户确认一个 token 后 batch_start。MCP 内部逐项准备、授权和登记，默认启动／复用后台协调器完成提交、跟踪、检查和归位，agent 只需按需 batch_status，无需逐个 prepare／submit／check，也不要为每张卡单独建批次。每项仍有独立 run 和远程目录；准备失败或输出冲突阻止整批提交，重复请求不会重交。完整参数、定向恢复和 CLI 见 [批量计算](docs/BATCH.md)。低层工具用于用户明确要求的手动操作、仅准备、已有 run 恢复或高级依赖流程；已有 run 不重新准备成新批次。
 
 需要 agent 退出后仍能推进完整任务时，先在 job_submission_plan 中明确批准 auto_submit／auto_sync 及回传、清理范围，再 job_authorize、job_lifecycle_start、monitor_start。用 job_lifecycle_get 读取持久进度和 pending_action；遇到 needs_attention 检查 failed_step 后 job_lifecycle_resume，已确认作业不重交。调度状态、应用判据和同步结果分别返回；无判据为 unverified，失败保留诊断数据，自动清理只在调度成功、判据通过且输出校验后执行。详见 [计算生命周期与恢复](docs/LIFECYCLE.md)。
 
 每个新会话先调用 `update_check`，若 `update_available=true`，向用户提示上游提交并用 `update_plan` 获取更新命令；网络失败代表未知，不应说已是最新。然后从客户端调用 `settings_get`、`cluster_list`、`cluster_check`、`cluster_info`。`settings_get` 暴露完整设置模板、配置路径和状态路径；`cluster_configure` 可持久化更新集群，立即作用于当前服务。
 
-以下为安装验收或明确手动诊断的低层流程；日常默认使用上面的 batch。用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：
+以下为安装验收或明确手动诊断的低层流程，使用 CLI 或 advanced 工具模式；日常默认使用上面的 batch。用户授权测试计算后，使用符合目标队列的微型脚本（[LSF 示例](examples/hello-lsf/job.sh)、[Slurm 示例](examples/hello-slurm/job.sh)）：
 
 1. `job_prepare(cluster, input_dir, script)`：返回本地快照和计划，不提交；检查上传清单与实际提交命令。
 2. `job_submission_plan(run_id, automation=null)`：展示实际脚本、输入哈希、完整集群设置、远程目录和同步／清理权限；用户核对后 `job_authorize(run_id, review_token, confirmation_note)`。

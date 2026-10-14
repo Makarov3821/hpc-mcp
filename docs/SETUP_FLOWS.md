@@ -28,7 +28,7 @@ application_source 接收应用名和用户明确提供的 1..32 个原脚本路
 
 bundle 必须在本流程 workspace 内，manifest 应用与来源注册一致，集群已配置且调度器匹配。安装后返回精确 version 和 review_token；独立 reviewer 的固定材料位于 flow.business.review_request。审阅失败保留意见，必须安装新版本，不能将旧失败版本直接改为通过。
 
-confirm 重新核对版本、文件哈希、独立报告和安装时的集群设置；配置变化后安装新版本并重新审阅。成功激活后提示重启 MCP 刷新应用工具，不证明计算成功。来源、版本和报告绑定持久流程；受管版本的普通 application_review_request/submit/activate 拒绝绕过步骤，活动流程引用阻止应用卸载和版本清理。
+confirm 重新核对版本、文件哈希、独立报告和安装时的集群设置；配置变化后安装新版本并重新审阅。成功激活后提示重启 MCP 刷新能力信息，不证明计算成功。默认通过 application_get 查看注册参数、batch_plan 计算；专属 prepare 工具只在显式 advanced 模式重启后注册。来源、版本和报告绑定持久流程；受管版本的普通 application_review_request/submit/activate 拒绝绕过步骤，活动流程引用阻止应用卸载和版本清理。
 
 独立 reviewer 的 fresh-context 身份仍由客户端声明；不能伪造报告或用户确认。未具备独立 reviewer 能力则等待。没有进入受管流程的旧版独立工具仍保留兼容行为，不能称其为已完成的 setup_flow；不是整个服务的统一提交授权门禁，后者在 Phase 10B。
 
