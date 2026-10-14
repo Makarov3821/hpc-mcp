@@ -9,6 +9,18 @@ import tempfile
 from .jobs import relative_path
 
 
+def validate_destination(history, run, target, inplace=False):
+    """Reject overlap in both directions; only this run's outputs may live in state."""
+    target = Path(target).resolve()
+    state = history.root
+    source = Path(run['input_dir']).resolve()
+    outputs = state / run['run_id'] / 'outputs'
+    if (target == Path(target.anchor) or state.is_relative_to(target)
+            or (target.is_relative_to(state) and target != outputs)
+            or (not inplace and (target.is_relative_to(source) or source.is_relative_to(target)))):
+        raise ValueError('destination overlaps input/state data or is a filesystem root')
+
+
 def preview(jobs, run, cluster, policy, target, max_file_bytes, max_total_bytes, reserve_bytes, check_space=True):
     with tempfile.TemporaryDirectory(prefix="hpc-mcp-preview-") as directory:
         result = jobs.transfer.run(cluster, Path(directory), run["remote_dir"], download=True,

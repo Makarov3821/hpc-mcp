@@ -41,9 +41,8 @@ def sync_policy(jobs, run, values=None):
     else:
         target = Path(result['destination']); source = Path(run['input_dir'])
         inplace = run.get('project_root') and target == source
-        if not inplace and (target == Path(target.anchor) or target.is_relative_to(source) or source.is_relative_to(target)
-                or (target.is_relative_to(jobs.history.root) and target != jobs.history.root / run['run_id'] / 'outputs')):
-            raise ValueError('output destination overlaps input/state or a filesystem root')
+        from .sync_support import validate_destination
+        validate_destination(jobs.history, run, target, inplace)
         result['destination_template'] = str(target)
     return result
 

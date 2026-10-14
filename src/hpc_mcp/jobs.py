@@ -450,7 +450,7 @@ class JobService:
                  max_file_bytes: int | None = None, max_total_bytes: int | None = None,
                  reserve_bytes: int | None = None, stable_only: bool = False,
                  _operation_id: str | None = None, _authorization_token: str | None = None) -> dict:
-        from .sync_support import preview, positive
+        from .sync_support import preview, positive, validate_destination
         if type(stable_only) is not bool or (resume is not None and type(resume) is not bool):
             raise ValueError("stable_only/resume must be boolean")
         with self.history.lock(run_id):
@@ -487,13 +487,10 @@ class JobService:
                 target = Path(run["input_dir"])
                 if policy.output_mode != "filtered" or policy.sync_overwrite == "replace":
                     raise ValueError("return to input_dir requires filtered mode and error/merge overwrite")
+                validate_destination(self.history, run, target, inplace=True)
             elif destination is not None:
                 target = Path(destination).expanduser().resolve()
-                source = Path(run["input_dir"])
-                if (target == Path(target.anchor) or target.is_relative_to(source)
-                        or source.is_relative_to(target)
-                        or (target.is_relative_to(self.history.root) and target != root / "outputs")):
-                    raise ValueError("destination overlaps input/state data or is a filesystem root")
+                validate_destination(self.history, run, target)
             else:
                 target = root / "outputs" if policy.sync_layout == "direct" \
                     else root / "outputs" / attempt_id
@@ -609,11 +606,9 @@ class JobService:
                     backup = root / "sync-history" / attempt_id
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(target), str(backup))
-                if target.exists():
-                    shutil.copytree(attempt, target, dirs_exist_ok=True)
-                    shutil.rmtree(attempt)
-                else:
-                    shutil.move(str(attempt), str(target))
+                from .result_install import install
+                install(attempt, target, files, policy.sync_overwrite, inplace)
+                shutil.rmtree(attempt)
             except (OSError, ValueError) as exc:
                 updated = self.history.update(run_id, "sync_install_failed", sync_state="failed",
                     sync_error=str(exc), output_dir=str(attempt), sync_backup=str(backup) if backup else None)
@@ -773,10 +768,43 @@ class JobService:
                 f'test "$hpc_dir" = "$hpc_base/{run_id}"\n'
                 f"cd -- {directory}\ntest -f {prefix}-exit\ntest ! -L {prefix}-response\n"
                 f'test "$(cat {prefix}-exit)" = 0\n'
-                f'test "$(sha256sum {prefix}-response | cut -c 1-64)" = {digest}\n')
+                f'hpc_receipt_hash=$(sha256sum -- {prefix}-response)\n'
+                f'test "${{hpc_receipt_hash:0:64}}" = {digest}\n')
+            # Validate the retained content remotely in the same command as deletion.
+            # A completed scheduler job does not make its shared files immutable.
+            for item in run['output_manifest']:
+                relative = relative_path(item['path'])
+                parts = PurePosixPath(relative).parts
+                checks = [f"test ! -L {shlex.quote('./' + '/'.join(parts[:i]))}"
+                          for i in range(1, len(parts) + 1)]
+                file = shlex.quote('./' + relative)
+                checks += [f'test -f {file}', f'hpc_output_hash=$(sha256sum -- {file})',
+                           'test "${hpc_output_hash:0:64}" = '
+                           + shlex.quote(item['sha256'])]
+                validation += ('if ! ( ' + ' && '.join(checks) + ' ); then\n'
+                    "printf '%s\\n' 'remote outputs changed or unsafe; resync before remote cleanup' >&2\n"
+                    'exit 1\nfi\n')
             command = validation + (f"du -sb -- {directory}" if dry_run else
                                     f"cd -- /\nrm -rf --one-file-system -- {directory}")
-            result = self.transport.run(cluster, command)
+            # Refuse newly selected files too: they have never been retained locally.
+            from .sync_support import preview
+            from .ssh import CommandResult
+            options = run.get('sync_options', {})
+            policy = replace(cluster,
+                output_mode=options.get('mode', run.get('output_mode', 'filtered')),
+                output_include=options.get('includes', run['outputs']),
+                output_exclude=options.get('excludes', run.get('output_exclude', [])))
+            selection = preview(self, run, cluster, policy, output,
+                options.get('max_file_bytes', cluster.max_output_file_bytes),
+                options.get('max_total_bytes', cluster.max_output_bytes), 0, check_space=False)
+            expected = [(item['path'], item['size']) for item in run['output_manifest']]
+            actual = [(item['path'], item['size']) for item in selection.get('files', [])]
+            if not selection['ok'] or actual != expected:
+                result = CommandResult(-1,
+                    stderr='remote outputs changed or unsafe; resync before remote cleanup',
+                    error='remote_outputs_unverified')
+            else:
+                result = self.transport.run(cluster, command)
             if not dry_run:
                 self.history.update(run_id, "remote_cleaned" if result.ok else "remote_cleanup_failed",
                                     remote_removed=result.ok, remote_cleanup_diagnostic=result.diagnostic())

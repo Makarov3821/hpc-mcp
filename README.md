@@ -390,6 +390,8 @@ codex mcp list
 
 ## 开发与当前边界
 
+安全审查发现、修复状态和剩余边界见 [安全风险与修复计划](security-plan.md)。
+
 在 repo 根目录执行：
 
 ```bash

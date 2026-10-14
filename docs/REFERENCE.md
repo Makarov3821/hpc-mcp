@@ -169,7 +169,7 @@ CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-
 
 `job_prepare` 新增 `project_root`（项目母目录 A）和 `input_files`（精确相对文件列表，自动包含提交脚本）。`input_dir` 必须在 A 内；省略列表则按原规则快照整个任务目录。每次准备创建独立作业，调用方负责选择输入、生成运行脚本和声明依赖。
 
-指定 `project_root` 时必须提供非空 `outputs`，使用过滤同步。准备记录固定的项目和输入目录；默认回传到输入目录，按远程相对路径归位。可显式指定其他 `destination`。回传到输入目录仅允许 `error`／`merge`；`error` 按结果文件检查冲突，`merge` 覆盖同名结果，但两者都禁止覆盖上传清单中的输入和跟随目标符号链接。多文件安装并非整体原子操作，安装中断可能留下部分结果，错误会记录在历史中。
+指定 `project_root` 时必须提供非空 `outputs`，使用过滤同步。准备记录固定的项目和输入目录；默认回传到输入目录，按远程相对路径归位。可显式指定其他 `destination`，但目标不能包含状态目录，也不能位于状态目录内部（该 run 的受管 outputs 除外）；回传输入目录同样不能包含状态目录。回传到输入目录仅允许 `error`／`merge`；`error` 原子安装且拒绝覆盖并发创建的同名文件，`merge` 原子替换同名结果，两者都禁止覆盖上传清单中的输入和跟随目标符号链接。完整文件先暂存到目标文件系统再安装，目标目录组件通过目录 fd 打开并拒绝符号链接。多文件安装并非整体原子操作，安装中断可能留下部分结果，错误会记录在历史中。
 
 暂存在 `A/.hpc-mcp-sync/<run_id>/<attempt_id>/`，成功后移走或删除，并移除空父目录；失败暂存保留。`job_cache_cleanup(run_id, older_than_seconds=86400, dry_run=true)` 在作业锁下预览或清理过期暂存，返回路径及字节数。CLI 为 `cache-cleanup RUN_ID --older-than-seconds N [--apply]`。仅处理登记作业的暂存目录，不删除快照、历史、已安装结果或远程目录；不内置定时器。未指定项目的旧作业也可清理状态目录中的 `sync-attempts/`。
 
@@ -346,13 +346,13 @@ CLI：`sync-preview` 对应预览参数，`sync` 增加 `--[no-]resume`、`--max
 | `job_cache_cleanup` | 既有失败暂存清理，older_than_seconds=86400，dry_run=true；不删除输入／结果 |
 | `job_storage_cleanup` | run_id,categories=["sync_history"],older_than_seconds=86400,dry_run=true；categories 可选 snapshot／sync_history／old_outputs，只处理终态且同步 complete 的任务 |
 | `input_cache_cleanup` | older_than_seconds=86400,max_cache_bytes=10737418240,dry_run=true；按年龄或容量从最旧的共享 blob 开始清理 |
-| `job_remote_cleanup` | run_id,dry_run=true；重新确认终态、验证非空已下载结果哈希和原提交回执，检查远程 canonical 路径后才允许删除 |
+| `job_remote_cleanup` | run_id,dry_run=true；重新确认终态、验证非空已下载结果本地哈希和原提交回执、复查已选远程文件清单，在执行删除的同一 SSH 命令中核对远程 SHA-256 并拒绝符号链接路径，检查远程 canonical 路径后才允许删除 |
 
 本地清理保留数据库、manifest、模板和应用证据元数据，保护最新结果及项目中已归位的输出。删除 snapshot 会记录 snapshot_removed，之后无法从这些文件重放；旧输出／归档删除不可恢复。所有本地清理受操作锁约束，拒绝路径越界和 symlink。
 
 开启 input_cache 后，输入先以 SHA-256 存为 blob，再独立复制／reflink 到快照；不 hardlink 原输入、缓存或其他快照，修改一份不会污染另一份。缓存复用前校验内容；不支持 CoW 时会额外复制占用磁盘。清理缓存不删除快照，维护事件写入 events 的 maintenance 标识。默认不启用，也不创建后台计时器。
 
-远程清理默认预览目录用量。dry_run=false 永久删除本 run 中未回传的文件，先确认已选择全部需要保留的数据；成功记录 remote_removed，不修改其他目录。同步完成只表示所选文件完整，并不表示已下载所有输出。CLI `storage-cleanup RUN_ID --category ...`、`input-cache-cleanup`、`remote-cleanup RUN_ID`，对应删除需显式加 `--apply`。
+远程清理默认预览目录用量。预览和实际删除都拒绝已选文件的变化、缺失或新出现的匹配文件，须重新同步后再清理；远程校验失败也会保留目录。删除前校验不是远程不可变快照，仍需确保其他进程不会在校验后继续写入。dry_run=false 永久删除本 run 中未回传的文件，先确认已选择全部需要保留的数据；成功记录 remote_removed，不修改其他目录。同步完成只表示所选文件完整，并不表示已下载所有输出。CLI `storage-cleanup RUN_ID --category ...`、`input-cache-cleanup`、`remote-cleanup RUN_ID`，对应删除需显式加 `--apply`。
 
 ## 工作流与用量统计
 
