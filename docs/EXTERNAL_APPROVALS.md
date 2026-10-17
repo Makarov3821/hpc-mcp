@@ -95,6 +95,8 @@ private_key 仅存在于独立签名端，上述片段不应在 agent 进程内�
 | cluster_registry_reconcile | 集群名 | 冲突解除预览的 review_token，绑定工作区、配置和精确冲突记录；不释放声明或批准清理 |
 
 缺少签名的门禁返回 external_approval_required 和 approval_request，便于请求对应签名。
+
+自动收尾的 release_policy 和 release_contract 由 job_submission_plan 或聚合 workflow／batch 的精确签名绑定，核验通过后无需再签一份 retention_release。retention_finalize 不授予新规则；独立手动释放仍需表中的单独签名。自动释放不增加删除权限，变更规则、输出或应用检查要求新计划／确认；运行时继续复核撤销与当前事实。
 review_submit 的签名覆盖原报告和原始审阅材料摘要，不能仅修改 reviewer_session 字符串通过。
 应用激活和 prepare 复核已签署的审阅/激活材料，后台提交/同步/清理复核 run 或聚合计划的签名。
 材料、依赖、runner 设置或配置变化会拒绝原许可；依赖派生的新输入仍需重新审阅和批准。

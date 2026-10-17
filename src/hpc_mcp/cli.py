@@ -358,12 +358,23 @@ def main():
             retention_command.add_argument('--apply', action='store_true')
             retention_command.add_argument('--review-token')
             retention_command.add_argument('--confirmation-note')
+    finalize = sub.add_parser('retention-finalize')
+    finalize.add_argument('--run-ids', nargs='+', required=True)
     args, unknown = parser.parse_known_args()
     if args.approval_policy:
         os.environ['HPC_MCP_APPROVAL_POLICY'] = str(Path(args.approval_policy).expanduser().resolve())
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action == 'retention-finalize':
+            from .jobs import JobService
+            from .finalization import FinalizationService
+            from .retention import RetentionService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            jobs = JobService(clusters, args.state_dir, config_path=args.config)
+            data = FinalizationService(jobs).many(args.run_ids)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action in ('cluster-registry-probe', 'cluster-registry-reconcile',
                            'retention-status', 'retention-hold', 'retention-release'):
             from .jobs import JobService

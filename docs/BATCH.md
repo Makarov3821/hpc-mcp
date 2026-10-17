@@ -1,6 +1,6 @@
 # 批量计算：一次计划、一次确认
 
-每项提交自动建立共享保留声明，批次计算／同步完成不会自动释放。阶段结束可将明确 run_ids 一次交给 retention_release 预览，经用户确认后统一释放；后续清理仍独立确认。其他 agent 需要接续远程数据时先新增自己的 holder，见 [跨 agent 保留登记](RETENTION.md)。
+每项提交自动建立共享保留声明。可在 automation.release_policy 中声明必要／可选输出与正常收尾策略，随批次一次确认后自动核验并释放本阶段声明；未配置规则时仍需 retention_release 预览／确认。后续清理独立批准。其他 agent 需要接续远程数据时先新增自己的 holder，见 [跨 agent 保留登记](RETENTION.md)。
 
 日常计算默认使用 batch_plan → 用户确认 → batch_start → 按需 batch_status；单个输入也用一项 tasks。同一请求、集群与项目内的多个输入归入同一批次，不为每张卡分别建批次。批量入口在 MCP 内部复用注册 handler、独立 run、workflow、生命周期和同步 worker；agent 不必逐个 prepare／authorize／submit／check。客户端是否审批每次调用仍由客户端控制，批量入口减少调用次数，不取消 Phase 10 的权限检查。
 
@@ -68,3 +68,5 @@ hpc-mcp --config /ABS/clusters.toml --state-dir /ABS/state batch-status BATCH_ID
 ```
 
 batch-plan 还支持 --automation-file、--limits、--monitor-settings、--[no-]start-monitor、--[no-]compact；控制命令为 batch-pause、batch-resume --task-ids、batch-review。所有入口共用核心，历史在 agent 状态目录，计划请求不应包含凭据。
+
+自动释放参数、无应用检查时的明确限制、工作流依赖与诊断恢复见 [正常收尾指南](FINALIZATION.md)。

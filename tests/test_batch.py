@@ -286,7 +286,9 @@ class BatchTests(unittest.TestCase):
         ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf',
             'work_root': str(fixture.remote)})
         self.jobs.config_path = config
-        value = self.plan(start_monitor=True, monitor_settings=asdict(self.fixture.settings))
+        value = self.plan(start_monitor=True, monitor_settings=asdict(self.fixture.settings),
+            automation={'release_policy': {'strategy': 'after_verified_sync',
+                'required_outputs': ['results/value.txt'], 'allow_unverified_application': True}})
         def stop_and_wait():
             self.batches.monitor.stop()
             deadline = time.monotonic() + 5
@@ -303,6 +305,7 @@ class BatchTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertEqual(status['stage'], 'complete', status)
+        self.assertTrue(all(t['finalization']['cleanup_ready'] for t in status['tasks']), status)
         self.assertEqual((self.root / 'submissions').read_text(), '2')
         self.assertTrue(all((d / 'results/value.txt').is_file() for d in self.directories))
 

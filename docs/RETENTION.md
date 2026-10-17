@@ -1,6 +1,6 @@
 # 跨 agent 保留登记
 
-远程清理以集群工作目录中的共享登记表为依据。超过保留时间、调度结束或同步完成，都不会自动释放数据。所有 MCP 客户端必须使用支持本协议的版本；旧版本或手动 rm 无法受它约束。
+远程清理以集群工作目录中的共享登记表为依据。单凭超过保留时间、调度结束或同步完成不会释放数据；只有预先批准的正常收尾规则或明确释放才会结束声明。所有 MCP 客户端必须使用支持本协议的版本；旧版本或手动 rm 无法受它约束。
 
 升级前停止旧协调器和 MCP 连接，所有相关客户端升级重启后再启用清理。清空本地状态前先处理自己的远程声明；客户端身份也在状态库中，丢失后其他安装不会自动接管。共享登记目录不能作为某一安装的缓存随卸载删除。
 
@@ -26,7 +26,7 @@ cluster_check 只读检查，不创建标记；只读探测发现另一节点时
 
 ## 保留与释放
 
-- 提交前自动登记 `submission` 保留声明；登记失败不上传、不调用调度器。提交／同步完成后记录回执，不释放声明。
+- 提交前自动登记 `submission` 保留声明；登记失败不上传、不调用调度器。提交／同步完成后记录回执；没有预先批准的释放规则时仍保持声明。
 - 其他阶段或 agent 使用 `retention_hold(cluster, run_ids, holder, reason)`，例如 holder=agent-a-stage2。实际身份包含本地 MCP 安装的命名空间；新增和重新保留都会更新版本。
 - `retention_status(cluster, run_ids)` 查看所有声明、原因、版本、工作区身份与远程清理资格，无需导入其他客户端的本地历史。
 - 阶段结束后，`retention_release(cluster, run_ids, holder="submission", reason=...)` 默认只预览。用户确认后以 `dry_run=false, review_token=..., confirmation_note=...` 执行。计划有效 1 小时，绑定配置、工作区、任务版本与明确持有者。
@@ -51,12 +51,6 @@ live 表示登记仍可操作，不代表调度器正在运行；调度状态仍
 
 CLI：`cluster-registry-probe CLUSTER`、`retention-status --cluster CLUSTER --run-ids ID ...`、`retention-hold --cluster CLUSTER --run-ids ID ... --holder LABEL --reason TEXT`。`retention-release` 和 `cluster-registry-reconcile` 默认预览，用 `--apply --review-token TOKEN --confirmation-note TEXT` 执行。始终传相同的绝对 --config、--state-dir。
 
-## 已固定的后续方案：正常收尾（待实现）
+## 正常收尾与自动释放
 
-Phase 15 将在提交批次时一次批准释放规则，随后由 MCP 验证并自动释放对应阶段的声明；当前版本仍需显式释放，本节不是现有工具参数说明。
-
-必要输出缺失或校验失败必须阻止收尾；可选输出存在则同步，缺失不阻止。after_verified_sync 要求调度成功且退出码 0、必要输出完整归位并通过哈希校验、无待恢复安装或活动同步；若配置应用检查，还须通过。没有应用规则时仍标 unverified，批准计划必须说明不证明科学结果正确。
-
-after_consumers_complete 进一步等待已登记、仍需本任务远程文件的后续阶段收尾或明确解除依赖；manual 始终保持显式释放。失败、取消、状态不明、规则／必要输出不完整以及依赖不明时继续保留，不能按任务年龄或无活动时间推断完成。
-
-每个阶段只结束自己的声明，其他持有者独立保留。全部声明释放且依赖已解除后形成 cleanup_ready 信号；新增保留或相关事实变化使信号失效。实际删除仍需保留时间、独立清理批准和最终复核，不附带新增删除权限。旧任务和旧批准不自动迁移。详细契约与验收见 [Phase 15](../plan-new.md#phase-15正常收尾与按批准规则自动释放)。
+Phase 15 已实现：提交批次时一次批准必要／可选输出、应用检查限制和释放策略，由 MCP 核验后自动结束本阶段声明。支持 manual、after_verified_sync、after_consumers_complete；没有规则的旧任务不自动迁移。所有声明结束后才具备共享清理资格，实际删除仍独立批准和复核。参数、依赖处理与恢复见 [正常收尾指南](FINALIZATION.md)。

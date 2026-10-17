@@ -1,6 +1,6 @@
 # 持久计算生命周期（Phase 9C）
 
-共享保留登记新增独立门禁：新提交默认保留，完成同步不释放。用户明确 retention_release 后才允许清理；保留期间计算与归位正常完成，清理标为 deferred。远程删除还核对其他客户端的声明与登录节点冲突，见 [保留登记](RETENTION.md)。
+共享保留登记新增独立门禁：新提交默认保留，完成同步不释放。已有批准的 release_policy 时按规则自动核验并释放，否则需用户明确 retention_release；保留期间计算与归位正常完成，清理标为 deferred。自动策略等待条件时显示 awaiting_release，见 [正常收尾](FINALIZATION.md)。远程删除还核对其他客户端的声明与登录节点冲突，见 [保留登记](RETENTION.md)。
 
 生命周期复用 JobService、monitor、同步 worker 和授权门禁，按独立 run 记录进度，不重新生成脚本、不调用 LLM。默认关闭；准备、授权、启用与启动后台进程分开。历史保存在 agent 的 state/history.sqlite3，agent 退出后可读取和恢复。
 

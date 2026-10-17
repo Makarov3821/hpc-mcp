@@ -46,7 +46,7 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for name in ('setup_flow_create', 'application_get', 'cluster_probe',
                                  'job_get', 'job_cancel', 'job_logs', 'monitor_stop',
                                  'local_cache_cleanup', 'cluster_work_cleanup', 'retention_hold',
-                                 'retention_release', 'retention_status', 'cluster_registry_probe',
+                                 'retention_release', 'retention_status', 'retention_finalize', 'cluster_registry_probe',
                                  'cluster_registry_reconcile'):
                         self.assertIn(name, tools)
                     catalog = (await call(client, 'settings_get', {}))['tool_catalog']
@@ -145,6 +145,52 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 async with Client(params, mode=mode) as client:
                     status = await call(client, 'retention_status', {'cluster': 'lsf', 'run_ids': [rid]})
                     self.assertEqual(status['tasks'][0]['state'], 'deleted')
+            finally:
+                fixture.doCleanups()
+
+    async def test_approved_automatic_completion_over_real_stdio(self):
+        import test_finalization
+        from hpc_mcp.config import ConfigManager
+        for mode in ('auto', 'legacy'):
+            fixture = test_finalization.FinalizationTests()
+            fixture.setUp()
+            try:
+                root = fixture.fixture.root
+                config = root / 'clusters.toml'
+                ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf',
+                    'work_root': str(fixture.fixture.remote)})
+                fixture.jobs.config_path = config
+                run = fixture.synced()
+                rid = run['run_id']
+                ssh = fixture.fixture.bin / 'ssh'
+                ssh.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                    "os.execvp('bash',['bash','-c',' '.join(sys.argv[sys.argv.index('alias')+1:])])\n")
+                ssh.chmod(0o755)
+                params = StdioServerParameters(command=sys.executable,
+                    args=['-m', 'hpc_mcp', '--config', str(config), '--state-dir',
+                          str(fixture.jobs.history.root), 'serve'], cwd=str(root),
+                    env=dict(os.environ, PYTHONPATH=str(ROOT / 'src'),
+                             PATH=str(fixture.fixture.bin) + ':' + os.environ['PATH']))
+                async def call(client, name, args):
+                    response = await client.call_tool(name, args)
+                    self.assertFalse(response.is_error, response.content)
+                    return response.structured_content
+                async with Client(params, mode=mode) as client:
+                    tools = {t.name: t for t in (await client.list_tools()).tools}
+                    self.assertTrue(tools['retention_finalize'].annotations.destructive_hint)
+                    result = await call(client, 'retention_finalize', {'run_ids': [rid]})
+                    self.assertTrue(result['tasks'][0]['cleanup_ready'], result)
+                    self.assertEqual(result['tasks'][0]['application']['status'], 'unverified')
+                    again = await call(client, 'retention_finalize', {'run_ids': [rid]})
+                    self.assertEqual(again['tasks'][0]['retention_revision'], result['tasks'][0]['retention_revision'])
+                async with Client(params, mode=mode) as client:
+                    status = await call(client, 'retention_status', {'cluster': 'lsf', 'run_ids': [rid]})
+                    self.assertTrue(status['tasks'][0]['cleanup_ready'])
+                    await call(client, 'retention_hold', {'cluster': 'lsf', 'run_ids': [rid],
+                        'holder': 'submission', 'reason': 'Synthetic explicit preservation'})
+                    result = await call(client, 'retention_finalize', {'run_ids': [rid]})
+                    self.assertFalse(result['tasks'][0]['cleanup_ready'])
+                    self.assertIn('explicit_hold_requires_manual_release', result['tasks'][0]['blockers'])
             finally:
                 fixture.doCleanups()
 

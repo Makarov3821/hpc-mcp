@@ -37,6 +37,7 @@ class LifecycleService:
             'needs_attention': 'inspect_failed_step_then_job_lifecycle_resume',
             'complete': 'inspect_separate_scheduler_application_and_sync_results',
             'paused': 'job_lifecycle_resume',
+            'awaiting_release': 'inspect_finalization_blockers_or_wait_for_dependent_stages',
         }.get(stage, 'wait_or_inspect_job_lifecycle_get')
         monitor = None
         try:
@@ -51,6 +52,7 @@ class LifecycleService:
             'sync': {k: run.get(k) for k in
                 ('sync_state', 'output_dir', 'output_manifest', 'sync_error', 'last_sync_operation')},
             'monitor_stage': (monitor or {}).get('stage'), 'pending_action': action,
+            'finalization': run.get('finalization'),
             'cleanup': {'local': (monitor or {}).get('last_cleanup'),
                 'deferred': (monitor or {}).get('cleanup_deferred') or record.get('cleanup_deferred'),
                 'remote_removed': run.get('remote_removed', False)}}
@@ -161,6 +163,17 @@ class LifecycleService:
                 step = 'retention'
                 if not verified_outputs(run, plan['automation']['sync_options']):
                     raise ValueError('Retained outputs changed; inspect before retrying synchronization.')
+                release = plan['automation'].get('release_policy', {})
+                if release.get('strategy', 'manual') != 'manual':
+                    from .finalization import FinalizationService
+                    completion = FinalizationService(self.jobs).advance(run_id)
+                    run = self.history.get(run_id)
+                    if not completion.get('cleanup_ready'):
+                        self.save(run_id, stage='awaiting_release', failed_step=None,
+                            cleanup_deferred='; '.join(completion.get('blockers', [])),
+                            next_check_at=self.clock() + poll_interval_seconds)
+                        return self.get(run_id)
+                    self.save(run_id, cleanup_deferred=None)
                 step = 'remote_cleanup'
                 if (plan['automation']['remote_cleanup'] and
                         entry.get('application_result', {}).get('status') == 'passed' and

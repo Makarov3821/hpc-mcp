@@ -102,7 +102,7 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 
 1. 创建 cluster_setup 流程，提供 SSH alias 和已有设置；流程中的 cluster_probe 保存身份、调度器、队列与目录证据。软件发现最多有界 module avail，不扫盘；缺失信息由用户补充。
 2. 新接入使用 setup_flow_create(kind="cluster_setup") → setup_flow_step(cluster_inputs/cluster_probe) → 展示计划 → 用户确认 setup_flow_confirm；常用队列、核数和软件环境从用户脚本进入应用配置，不推断执行方式。独立 cluster_configure/config-set 保留为显式手动设置入口。
-3. 配置保存后调用 cluster_registry_probe，建立共享保留登记并核对实际登录节点。相同 work_root 路径的配置会提示核对；共享 workspace_id 出现不同节点时停止清理，第二节点的提交也会在上传前阻止。新任务默认保留，阶段结束后经用户确认 retention_release，再独立清理。详见 [跨 agent 保留登记](docs/RETENTION.md)。
+3. 配置保存后调用 cluster_registry_probe，建立共享保留登记并核对实际登录节点。相同 work_root 路径的配置会提示核对；共享 workspace_id 出现不同节点时停止清理，第二节点的提交也会在上传前阻止。新任务默认保留；批次可一次批准正常收尾后的自动释放规则，否则阶段结束后确认 retention_release，再独立清理。详见 [跨 agent 保留登记](docs/RETENTION.md)。
 4. 用户提供提交脚本或 qg16／qvasp 源码，进入下面的标准应用注册流程。登录检查不表示计算节点软件已验证。
 
 ### 用户脚本 → 应用插件 → 固定执行
@@ -212,6 +212,8 @@ tool_timeout_sec = 1200
 OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执行限制需按所用版本另行确认。Codex 的 `tool_timeout_sec` 则应覆盖 SSH、传输和校验耗时。[官方 OpenCode MCP 文档](https://opencode.ai/docs/mcp-servers/)
 
 ## 5. 验收 MCP 工具与作业流程
+
+正常收尾可在批次 automation.release_policy 中固定必要输出、可选输出与释放条件，随批次一次确认；MCP 在调度成功、必要文件校验归位及应用／依赖检查后自动结束对应声明。没有规则的请求仍保持手动保留，不推断科学结果正确。配置示例与恢复入口见 [正常收尾与自动释放](docs/FINALIZATION.md)。
 
 日常维护使用默认可用的 local_cache_cleanup、cluster_work_cleanup：默认预览保留 7 天后的候选数据，用户确认精确 token 后批量执行。未明确释放保留声明的任务、活动任务、待恢复安装和未校验的结果保留；最新归位输出、项目输入与历史不删。集群工具仅清理已登记的 work_root/run_id，不清空根目录或未知文件夹。类别、筛选、签名审批及 CLI 见 [缓存与工作目录清理](docs/MAINTENANCE.md)。
 

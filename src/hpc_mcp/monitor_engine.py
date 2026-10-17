@@ -173,6 +173,14 @@ class MonitorEngine:
             'output_dir': run.get('output_dir') if auto_sync else None, 'synced': auto_sync}) if entry['stage'] != 'complete' else None
         policy = entry['policy']['cleanup_policy']
         needs_cleanup = policy['storage_categories'] or policy['sync_cache_age_seconds'] is not None
+        if 'release_policy' in (run.get('submission_plan') or {}).get('automation', {}):
+            from .finalization import FinalizationService
+            completion = FinalizationService(self.jobs).advance(run['run_id'], _observed=observed)
+            run = self.jobs.history.get(run['run_id'])
+            self.service.update(entry, self.notification(entry, 'retention_updated', {
+                'normal_ready': completion.get('normal_ready'),
+                'cleanup_ready': completion.get('cleanup_ready'), 'blockers': completion.get('blockers')},
+                str(completion.get('retention_revision'))), finalization=completion)
         if entry['policy'].get('lifecycle'):
             try:
                 from .applications import ApplicationService

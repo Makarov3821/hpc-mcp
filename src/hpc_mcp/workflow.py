@@ -180,6 +180,11 @@ class WorkflowService:
             run = self.jobs.history.get(rid)
             selected = dict(automation or {}, **(_permissions_by_run or {}).get(rid, {}))
             values = permission_policy(self.jobs, run, selected) if rid in runs else {}
+            if rid not in runs:
+                previous = (run.get('submission_plan') or {}).get('automation', {})
+                if 'release_policy' in previous:
+                    values.update(release_policy=previous['release_policy'],
+                                  sync_options=previous['sync_options'])
             extra = list(values.get('extra_sync', []))
             if downloads.get(rid):
                 extra.append(dict(mode='filtered', includes=sorted(downloads[rid]),
@@ -294,7 +299,10 @@ class WorkflowService:
                     authorize_locked(self.jobs, self.jobs.history.get(rid), token, confirmation_note,
                         {'workflow_id': workflow_id, 'review_token': review_token,
                          **({'external_approval': proof} if proof else {})})
-                self._control(workflow_id, enabled=_enable, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
+                self._control(workflow_id, enabled=False, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
+            from .retention import RetentionService
+            RetentionService(self.jobs).ensure_dependencies(self.get(workflow_id)['workflow'])
+            self._control(workflow_id, enabled=_enable)
         return self.get(workflow_id)
 
     def pause(self, workflow_id):

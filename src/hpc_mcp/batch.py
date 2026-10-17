@@ -293,6 +293,8 @@ class BatchService:
                 policy = {'sync': {k: v for k, v in plan['sync'].items()
                     if k not in ('includes', 'destination', 'destination_template')},
                     'automation': {k: v for k, v in plan['automation'].items() if k != 'sync_options'}}
+                if 'release_contract' in plan:
+                    policy['release_contract'] = plan['release_contract']
                 policy_id = digest(policy)
                 policies[policy_id] = policy
                 summary.update(script=plan['script'],
@@ -441,6 +443,11 @@ class BatchService:
                     'failed_step': state['lifecycle'].get('failed_step'),
                     'error': wf_task.get('last_error') or state['lifecycle'].get('last_error'),
                     'pending_action': state['pending_action']}
+                if state.get('finalization') is not None:
+                    row['finalization'] = {k: state['finalization'].get(k) for k in (
+                        'strategy', 'normal_ready', 'submission_released', 'cleanup_ready',
+                        'blockers', 'retention_revision', 'checked_at')}
+                    row['finalization']['cached'] = True
                 if item.get('error'):
                     row.update(stage=item['stage'], error=item['error'])
                     stage = item['stage']

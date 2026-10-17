@@ -54,8 +54,9 @@ def options_from(policy):
 def automation(jobs, run, options=None):
     from .monitor import cleanup_from
     if options is not None and (not isinstance(options, dict) or set(options) - {
-            'auto_submit', 'auto_sync', 'sync_options', 'cleanup_policy', 'remote_cleanup', 'extra_sync'}):
-        raise ValueError('automation accepts auto_submit,auto_sync,sync_options,cleanup_policy,remote_cleanup,extra_sync')
+            'auto_submit', 'auto_sync', 'sync_options', 'cleanup_policy', 'remote_cleanup',
+            'extra_sync', 'release_policy'}):
+        raise ValueError('unknown automation settings; release rules belong in release_policy')
     values = options or {}
     for key in ('auto_submit', 'auto_sync', 'remote_cleanup'):
         if type(values.get(key, False)) is not bool:
@@ -66,10 +67,15 @@ def automation(jobs, run, options=None):
     sync = sync_policy(jobs, run, values.get('sync_options'))
     if values.get('auto_sync'):
         sync['stable_only'] = True
-    return {'auto_submit': values.get('auto_submit', False), 'auto_sync': values.get('auto_sync', False),
+    result = {'auto_submit': values.get('auto_submit', False), 'auto_sync': values.get('auto_sync', False),
             'sync_options': options_from(sync), 'cleanup_policy': cleanup_from(values.get('cleanup_policy')),
             'remote_cleanup': values.get('remote_cleanup', False),
             'extra_sync': [options_from(sync_policy(jobs, run, p)) for p in additional]}
+    # Omit the new field for old plans so existing signed tokens remain valid.
+    if 'release_policy' in values:
+        from .finalization import policy
+        result['release_policy'] = policy(values['release_policy'], sync)
+    return result
 
 
 def build(jobs, run, permissions=None, verify_files=True):
@@ -108,6 +114,9 @@ def build(jobs, run, permissions=None, verify_files=True):
         'generation': run.get('generation'), 'template': run.get('template'), 'application': run.get('application'),
         'dependency_materialization': run.get('dependency_materialization'),
         'sync': sync_policy(jobs, run, permissions['sync_options']), 'automation': permissions}
+    if 'release_policy' in permissions:
+        from .finalization import contract
+        result['release_contract'] = contract(jobs, run, permissions['release_policy'])
     if len(json.dumps(result, allow_nan=False).encode()) > 4 * 1024 ** 2:
         raise ValueError('submission plan exceeds 4 MiB')
     return result
@@ -227,3 +236,5 @@ def cleanup_guard(jobs, run, category, age=None, categories=None):
         raise SubmissionError('cleanup_authorization_required', 'Deletion scope exceeds the confirmed job plan; preview and authorize first.')
     if category != 'remote' and not run.get('retention', {}).get('released'):
         raise SubmissionError('retention_required', 'Task data retained; explicitly release claims before local cleanup.')
+    from .finalization import assert_cleanup
+    assert_cleanup(jobs, run)

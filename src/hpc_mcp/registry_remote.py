@@ -226,7 +226,8 @@ def tasks(db, request, response):
     if len(set(ids)) != len(ids) or any(not re.fullmatch('r_[a-f0-9]{32}', r) for r in ids):
         raise ValueError('invalid run IDs')
     holder = request.get('holder')
-    if action in ('register', 'hold', 'release') and (
+    if action in ('register', 'hold', 'release', 'dependency_hold', 'auto_release',
+                  'auto_dependency_release', 'invalidate') and (
             not isinstance(holder, str) or not re.fullmatch('[A-Za-z0-9_.:-]{1,180}', holder)):
         raise ValueError('invalid holder identity')
     db.execute('BEGIN IMMEDIATE')
@@ -245,9 +246,10 @@ def tasks(db, request, response):
                 continue
             raise ValueError('unregistered task protected: ' + rid)
         if action == 'status':
-            results.append(dict(task, registered=True, cleanup_allowed=response['cleanup_allowed']
+            ready = (response['cleanup_allowed']
                 and task['state'] == 'live' and bool(task['holds'])
-                and all(h['released'] for h in task['holds'].values())))
+                and all(h['released'] for h in task['holds'].values()))
+            results.append(dict(task, registered=True, cleanup_allowed=ready, cleanup_ready=ready))
             continue
         if task['state'] != 'live':
             claim = task['holds'].get(holder, {})
@@ -258,13 +260,22 @@ def tasks(db, request, response):
                 continue
             raise ValueError('task is deleting/deleted; cannot acquire, release or repeat deletion')
         changed = False
-        if action in ('register', 'hold'):
+        if action in ('register', 'hold', 'dependency_hold'):
+            if action == 'dependency_hold' and task['origin'] != request['facts']:
+                raise ValueError('dependency registration identity mismatch')
             previous = task['holds'].get(holder)
             if previous is None or previous['released']:
                 if previous is None and len(task['holds']) >= 1000:
                     raise ValueError('too many holders for one task')
                 task['holds'][holder] = {'released': False, 'reason': request.get('reason', ''),
-                                        'created_at': time.time()}
+                                        'created_at': time.time(), 'manual_override': action == 'hold'}
+                changed = True
+            claim = task['holds'][holder]
+            if action == 'hold' and not claim.get('manual_override'):
+                claim['manual_override'] = True
+                changed = True
+            if action == 'dependency_hold' and claim.get('dependency') != request['binding']:
+                claim['dependency'] = request['binding']
                 changed = True
         elif action == 'release':
             claim = task['holds'].get(holder)
@@ -273,10 +284,38 @@ def tasks(db, request, response):
             repeated = claim['released'] and claim.get('release_token') == request['review_token']
             if not repeated and request['revisions'].get(rid) != task['revision']:
                 raise ValueError('retention changed after release preview')
-            if not claim['released']:
+            if not claim['released'] or claim.get('release_source') == 'automatic':
                 claim.update(released=True, released_at=time.time(), reason=request['reason'],
-                             release_token=request['review_token'])
+                             release_token=request['review_token'], release_source='manual')
                 changed = True
+        elif action in ('auto_release', 'auto_dependency_release', 'invalidate'):
+            if task['origin'] != request['facts']:
+                raise ValueError('automatic retention identity mismatch')
+            if request['revisions'].get(rid) != task['revision']:
+                raise ValueError('retention changed during automatic completion; retry')
+            claim = task['holds'].get(holder)
+            if not claim:
+                raise ValueError('automatic completion has no matching holder')
+            evidence = request['evidence']
+            if action == 'invalidate':
+                if claim['released'] and claim.get('release_source') == 'automatic':
+                    claim.update(released=False, reason=request['reason'])
+                    changed = True
+            else:
+                if not response['cleanup_allowed'] or claim.get('manual_override'):
+                    raise ValueError('host conflict or explicit hold blocks automatic release')
+                if action == 'auto_dependency_release':
+                    if (claim.get('dependency') != request['binding']
+                            or evidence.get('run_id') != request['binding']['consumer_run_id']):
+                        raise ValueError('dependency completion does not match confirmed consumer')
+                elif evidence.get('run_id') != rid or claim.get('dependency'):
+                    raise ValueError('completion evidence belongs to another stage')
+                previous = claim.get('automatic_evidence', {})
+                if not claim['released'] or (claim.get('release_source') == 'automatic' and any(
+                        previous.get(k) != evidence.get(k) for k in ('authority', 'facts', 'plan_token'))):
+                    claim.update(released=True, released_at=time.time(), release_source='automatic',
+                        automatic_evidence=evidence, reason=request['reason'])
+                    changed = True
         elif action == 'observe':
             task.setdefault('observations', {})[request['observer']] = request['observation']
             db.execute('UPDATE tasks SET data=? WHERE run_id=?', (json.dumps(task), rid))
@@ -298,8 +337,12 @@ def tasks(db, request, response):
         if changed:
             task['revision'] += 1
             db.execute('INSERT OR REPLACE INTO tasks VALUES (?,?)', (rid, json.dumps(task)))
+            detail = {'holder': holder, 'reason': request.get('reason')}
+            for key in ('evidence', 'binding'):
+                if request.get(key):
+                    detail[key] = request[key]
             db.execute('INSERT INTO events(time,run_id,action,detail) VALUES (?,?,?,?)',
-                (time.time(), rid, action, json.dumps({'holder': holder, 'reason': request.get('reason')})))
+                (time.time(), rid, action, json.dumps(detail)))
         results.append(task)
     db.commit()
     if action == 'cleanup':

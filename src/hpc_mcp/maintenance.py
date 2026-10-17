@@ -97,6 +97,8 @@ def eligible(jobs, run, include_failed):
         raise ValueError('nonempty final downloaded outputs must still pass SHA-256 verification')
     if not run.get('retention', {}).get('released'):
         raise ValueError('task retained; explicitly release retention claims before cleanup')
+    from .finalization import assert_cleanup
+    assert_cleanup(jobs, run)
 
 
 def remote_grant(jobs, run, token):

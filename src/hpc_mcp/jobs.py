@@ -781,6 +781,9 @@ class JobService:
                 return {'ok': True, 'already_removed': True, 'run_id': run_id}
             if not claim.get('cleanup_allowed') or not identity_matches:
                 raise ValueError('remote task retained, unregistered or login host conflict; inspect retention_status')
+            from .finalization import assert_cleanup
+            assert_cleanup(self, run,
+                automatic=claim['holds'].get(retention.holder(), {}).get('release_source') == 'automatic')
             if run["phase"] != "submitted" or run.get("sync_state") != "complete":
                 raise ValueError("remote cleanup requires submitted run and complete selected-output sync")
             status = self.job_status(run_id)

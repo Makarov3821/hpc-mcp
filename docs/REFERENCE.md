@@ -12,6 +12,8 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 
 ## 接入／适配流程基础设施
 
+正常收尾通过 automation.release_policy 固定必要／可选输出、策略和无应用检查时的明确限制，随批次／任务计划一次批准；retention_finalize(run_ids) 只重新核验已有规则，不授予权限或删除数据。后台自动推进，batch_status 提供缓存的 finalization／cleanup_ready；实际删除仍复核。详见 [正常收尾](FINALIZATION.md)。
+
 默认另提供 cluster_registry_probe、retention_status、retention_hold、retention_release、cluster_registry_reconcile。新提交自动保留，释放需精确计划和确认；全部声明释放后才能远程清理。节点冲突阻止删除，第二节点不打开数据库；解除冲突需独立确认。参数与 CLI 见 [跨 agent 保留登记](RETENTION.md)。
 
 setup_flow 与计算 workflow 分开，资料位于 state/onboarding/<flow_id>/workspace。详见 [流程工作区指南](SETUP_FLOWS.md)。Phase 9A 固定目录与历史，9B 已接入业务步骤、冻结确认与独立审阅循环。
