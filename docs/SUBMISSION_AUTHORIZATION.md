@@ -2,7 +2,7 @@
 
 日常默认走 [batch](BATCH.md)，batch_start 内部执行本页的逐项授权；单个输入也同样处理。以下低层 MCP 接口属于 serve --tool-profile advanced，CLI 和核心方法始终保留；默认模式仍可读取历史或显式撤销授权，不放宽执行门禁。
 
-普通脚本、生成模板、注册 handler 和 workflow 的提交共用 JobService 门禁。prepare 仅生成本地快照；应用激活、独立 review、安装确认、启用监控均不授权提交计算任务。MCP 不调用 LLM，也不认证聊天用户身份：确认说明由可信 agent 转交，不能伪造用户同意。
+普通脚本、生成模板、注册 handler 和 workflow 的提交共用 JobService 门禁。prepare 仅生成本地快照；应用激活、独立 review、安装确认、启用监控均不授权提交计算任务。MCP 不调用 LLM，也不认证聊天用户身份。默认 client_attested 模式由可信 agent 转交确认说明；可选 [外部签名审批](EXTERNAL_APPROVALS.md) 使用独立审批者/reviewer 的 Ed25519 背书，保持精确计划与角色绑定，不能伪造用户同意。
 
 ## 单任务流程
 

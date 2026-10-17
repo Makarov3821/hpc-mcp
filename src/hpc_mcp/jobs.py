@@ -240,9 +240,10 @@ class JobService:
                 "remote_dir", "sync_state")
         return {"ok": True, "runs": [{key: r[key] for key in keys} for r in runs]}
 
-    def job_get(self, run_id: str) -> dict:
+    def job_get(self, run_id: str, events_after_id: int = 0, event_limit: int = 100) -> dict:
+        page = self.history.event_page(run_id, events_after_id, event_limit)
         return {"ok": True, "run": self.history.get(run_id),
-                "events": self.history.events(run_id)}
+                "events": page['events'], 'events_next_after_id': page['next_after_id']}
 
     def job_submission_plan(self, run_id: str, automation: dict | None = None) -> dict:
         from .submission import plan_locked
@@ -256,6 +257,12 @@ class JobService:
 
     def job_revoke_authorization(self, run_id: str) -> dict:
         with self.history.lock(run_id):
+            run = self.history.get(run_id)
+            proof = (run.get('submission_authorization') or {}).get('external_approval')
+            if proof:
+                with self.history.connect() as db:
+                    db.execute('INSERT OR IGNORE INTO approval_revocations VALUES (?,?)',
+                               (proof['claims']['nonce'], run_id))
             run = self.history.update(run_id, 'submission_authorization_revoked', submission_authorization=None)
             return {'ok': True, 'run_id': run_id, 'phase': run['phase'],
                     'notes': ['Stops future authorized actions; existing remote jobs are not cancelled.']}
@@ -458,12 +465,17 @@ class JobService:
             if run["phase"] != "submitted":
                 raise ValueError("sync requires a confirmed submitted job")
             cluster = self._cluster(run)
-            from .submission import sync_guard
-            sync_guard(self, run, dict(mode=mode, includes=includes, excludes=excludes,
+            from .submission import sync_guard, sync_policy
+            request = dict(mode=mode, includes=includes, excludes=excludes,
                 destination=destination, layout=layout, overwrite=overwrite, checksum=checksum,
                 compress=compress, timeout=timeout, resume=resume, max_file_bytes=max_file_bytes,
-                max_total_bytes=max_total_bytes, reserve_bytes=reserve_bytes, stable_only=stable_only),
-                _authorization_token)
+                max_total_bytes=max_total_bytes, reserve_bytes=reserve_bytes, stable_only=stable_only)
+            sync_guard(self, run, request, _authorization_token)
+            requested_policy = sync_policy(self, run, request)
+            if run.get('sync_installation', {}).get('phase') == 'pending':
+                from .sync_installation import recover
+                return recover(self, run, requested_policy,
+                    cluster.sync_resume if resume is None else resume)
             policy = replace(cluster,
                 output_mode=("filtered" if includes is not None else run.get("output_mode", "filtered"))
                 if mode is None else mode,
@@ -601,33 +613,32 @@ class JobService:
                             raise ValueError(f"output would overwrite an input or follow a symlink: {relative}")
                         if dest.exists() and (not dest.is_file() or policy.sync_overwrite == "error"):
                             raise ValueError(f"output exists: {relative}; choose overwrite='merge'")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists() and policy.sync_overwrite == "replace":
-                    backup = root / "sync-history" / attempt_id
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(target), str(backup))
-                from .result_install import install
-                install(attempt, target, files, policy.sync_overwrite, inplace)
-                shutil.rmtree(attempt)
             except (OSError, ValueError) as exc:
                 updated = self.history.update(run_id, "sync_install_failed", sync_state="failed",
                     sync_error=str(exc), output_dir=str(attempt), sync_backup=str(backup) if backup else None)
                 return {"ok": False, "run": updated, "error": str(exc)}
-            if project:
-                self._prune_cache_parents(cache)
             transfer_stats = {}
             for label, key in (("Literal data", "transferred_bytes"), ("Matched data", "reused_bytes")):
                 match = re.search(re.escape(label) + r": ([0-9,]+) bytes", result.stdout)
                 if match:
                     transfer_stats[key] = int(match[1].replace(",", ""))
             final = status["ok"] and run["state"] in TERMINAL
-            updated = self.history.update(run_id, "synced", sync_state="complete" if final else "partial",
-                output_dir=str(target), output_manifest=files, sync_error=None,
-                sync_progress={"installed_bytes": sum(f["size"] for f in files), "files": len(files)},
-                sync_transfer_stats=transfer_stats,
-                sync_backup=str(backup) if backup else None)
-            return {"ok": True, "run": updated, "final": final, "resumed": reused,
-                    "warning": None if files else "no files matched the configured output patterns"}
+            if target.exists() and policy.sync_overwrite == 'replace':
+                backup = root / 'sync-history' / attempt_id
+            identity = None
+            if target.exists() and backup is None:
+                info = target.stat()
+                identity = [info.st_dev, info.st_ino]
+            journal = {'version': 1, 'phase': 'pending', 'started': False, 'attempt_id': attempt_id,
+                'target': str(target), 'staging': str(attempt), 'inplace': inplace,
+                'overwrite': policy.sync_overwrite, 'backup': str(backup) if backup else None,
+                'backup_manifest': file_manifest(target) if backup else None,
+                'root_identity': identity, 'manifest': files, 'files': {}, 'selection': selection,
+                'approved_policy': requested_policy, 'options': effective, 'resumed': reused,
+                'final': final, 'transfer_stats': transfer_stats}
+            self.history.update(run_id, 'sync_installation_started', sync_installation=journal)
+            from .sync_installation import execute
+            return execute(self, run, journal)
 
     def job_sync_preview(self, run_id: str, mode: str | None = None,
                          includes: list[str] | None = None, excludes: list[str] | None = None,

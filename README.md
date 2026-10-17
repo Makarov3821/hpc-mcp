@@ -390,7 +390,9 @@ codex mcp list
 
 ## 开发与当前边界
 
-安全审查发现、修复状态和剩余边界见 [安全风险与修复计划](security-plan.md)。
+安全审查发现、修复状态和剩余边界见 [安全风险与修复计划](security-plan.md)。同步支持持久化安装恢复，SSH 输出超限立即终止。历史事件按页读取，常规遥测默认每个 run 保留最近 1000 条，授权等审计事件只通过显式 history-archive 归档。需要独立审批主体背书时，使用 [可选外部签名审批](docs/EXTERNAL_APPROVALS.md)，私钥由独立审批端持有，MCP 只验证公钥与签名。
+
+可选签名模式使用 `approval` extra：`.venv/bin/python -m pip install -c requirements-mcp.lock -e '.[mcp,approval]'`。默认安装与客户端声明模式继续使用 `.[mcp]`。
 
 在 repo 根目录执行：
 

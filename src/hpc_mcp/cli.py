@@ -15,8 +15,33 @@ def main():
     parser = argparse.ArgumentParser(description="Inspect LSF/Slurm clusters over SSH")
     parser.add_argument("--config", default=os.environ.get("HPC_MCP_CONFIG", "clusters.toml"))
     parser.add_argument("--state-dir", default=os.environ.get("HPC_MCP_STATE", ".hpc-mcp"))
+    parser.add_argument('--approval-policy', default=os.environ.get('HPC_MCP_APPROVAL_POLICY'),
+                        help='External Ed25519 public-key policy; requires protected service startup')
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
+    sub.add_parser('approval-status')
+    approval_request = sub.add_parser('approval-request')
+    approval_request.add_argument('approval_action')
+    approval_request.add_argument('subject')
+    approval_request.add_argument('token')
+    sub.add_parser('approval-import').add_argument('envelope_file')
+    activation = sub.add_parser('application-activation-plan')
+    activation.add_argument('application'); activation.add_argument('version', type=int)
+    events = sub.add_parser('history-events')
+    events.add_argument('run_id')
+    events.add_argument('--after-id', type=int, default=0)
+    events.add_argument('--limit', type=int, default=100)
+    event_detail = sub.add_parser('history-event-detail')
+    event_detail.add_argument('run_id'); event_detail.add_argument('event_id', type=int)
+    event_detail.add_argument('--offset', type=int, default=0)
+    event_detail.add_argument('--limit', type=int, default=16384)
+    archive = sub.add_parser('history-archive')
+    archive.add_argument('--older-than-seconds', type=int, default=86400)
+    archive.add_argument('--limit', type=int, default=1000)
+    archive.add_argument('--apply', action='store_true')
+    archives = sub.add_parser('history-archives')
+    archives.add_argument('--limit', type=int, default=50)
+    archives.add_argument('--offset', type=int, default=0)
     runner_status = sub.add_parser('handler-runner-status')
     runner_status.add_argument('--probe', action=argparse.BooleanOptionalAction, default=True)
     runner_configure = sub.add_parser('handler-runner-configure')
@@ -300,9 +325,45 @@ def main():
     batch_review.add_argument('batch_id')
     batch_review.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
     args, unknown = parser.parse_known_args()
+    if args.approval_policy:
+        os.environ['HPC_MCP_APPROVAL_POLICY'] = str(Path(args.approval_policy).expanduser().resolve())
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action.startswith('approval-'):
+            from .history import History
+            from .approvals import register
+            history = History(args.state_dir)
+            if args.action == 'approval-status':
+                data = {'ok': True, 'approval': history.approvals.describe()}
+            elif args.action == 'approval-request':
+                data = {'ok': True, 'claims': history.approvals.request(
+                    args.approval_action, args.subject, args.token)}
+            else:
+                data = register(history, json.loads(Path(args.envelope_file).read_text()))
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+        if args.action.startswith('history-'):
+            from .history import History
+            history = History(args.state_dir)
+            if args.action == 'history-events':
+                data = history.event_page(args.run_id, args.after_id, args.limit)
+            elif args.action == 'history-event-detail':
+                data = history.event_detail(args.run_id, args.event_id, args.offset, args.limit)
+            elif args.action == 'history-archive':
+                data = history.archive_events(args.older_than_seconds, args.limit, not args.apply)
+            else:
+                data = history.archives(args.limit, args.offset)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+        if args.action == 'application-activation-plan':
+            from .applications import ApplicationService
+            from .jobs import JobService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            data = ApplicationService(JobService(clusters, args.state_dir,
+                config_path=args.config)).activation_plan(args.application, args.version)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
         if args.action.startswith('batch-'):
             from .jobs import JobService
             from .batch import BatchService
@@ -572,6 +633,8 @@ def main():
                 data = getattr(jobs, "job_" + args.action)(args.run_id)
     except (OSError, ValueError, ImportError, sqlite3.Error) as exc:
         data = {"ok": False, "error": getattr(exc, "code", str(exc))}
+        if getattr(exc, 'request', None):
+            data.update(message=str(exc), approval_request=exc.request)
         if hasattr(exc, "details"):
             data.update(message=str(exc), **exc.details)
         if args.action == "serve":

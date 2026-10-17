@@ -73,7 +73,7 @@ handler 只生成，不 SSH／rsync、不 bsub／sbatch、不修改原输入、�
 
 `differences` 为未批准的输出／行为差异；`unresolved` 为无法确定的行为；revise 至少填写一项可操作意见。只允许 MCP 边界迁移：单任务选择、remote_dir 绑定、JSON 参数接口、剥离提交及历史副作用；reviewer 必须解释具体变化，不自行批准计算命令、环境、默认值或生成分支变化。MCP 记录历次报告、时间和精确版本，不把静态 LLM 判断称为执行等价证明。
 
-**审阅来源由客户端声明。** MCP 无法验证独立会话是否真实创建，session ID 和 fresh_context 不是身份认证。agent 必须实际启动 reviewer、原样提交报告；没有此能力则保持 draft。MCP 不内部调用模型、不需要模型 API 凭据；普通任务调用不重复审阅。旧版 checked 记录不能替代新门禁，须请求独立审阅。
+**默认审阅来源由客户端声明。** session ID 和 fresh_context 不是身份认证。可选 [外部签名审批](EXTERNAL_APPROVALS.md) 要求配置的 reviewer 公钥验证精确审阅材料和原报告的背书，再由 approver 签署精确激活计划。签名认证背书主体，独立上下文的实际创建仍由 reviewer 负责。agent 必须实际启动 reviewer、原样提交报告；没有此能力则保持 draft。MCP 不内部调用模型、不需要模型 API 凭据；普通任务调用不重复审阅。旧版 checked 记录不能替代新门禁，须请求独立审阅。
 
 不再要求 cases.json 或 references/，也不提供 application_check。旧包可保留这些归档文件，但 MCP 不执行、不比较或以其作为通过依据。仓库的已知原脚本对照测试仅用于开发回归，不是新应用学习的通过门槛。
 

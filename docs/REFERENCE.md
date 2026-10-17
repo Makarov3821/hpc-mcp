@@ -169,7 +169,7 @@ CLI 对应 `template-import NAME DEFINITION.json`、`template-list`、`template-
 
 `job_prepare` 新增 `project_root`（项目母目录 A）和 `input_files`（精确相对文件列表，自动包含提交脚本）。`input_dir` 必须在 A 内；省略列表则按原规则快照整个任务目录。每次准备创建独立作业，调用方负责选择输入、生成运行脚本和声明依赖。
 
-指定 `project_root` 时必须提供非空 `outputs`，使用过滤同步。准备记录固定的项目和输入目录；默认回传到输入目录，按远程相对路径归位。可显式指定其他 `destination`，但目标不能包含状态目录，也不能位于状态目录内部（该 run 的受管 outputs 除外）；回传输入目录同样不能包含状态目录。回传到输入目录仅允许 `error`／`merge`；`error` 原子安装且拒绝覆盖并发创建的同名文件，`merge` 原子替换同名结果，两者都禁止覆盖上传清单中的输入和跟随目标符号链接。完整文件先暂存到目标文件系统再安装，目标目录组件通过目录 fd 打开并拒绝符号链接。多文件安装并非整体原子操作，安装中断可能留下部分结果，错误会记录在历史中。
+指定 `project_root` 时必须提供非空 `outputs`，使用过滤同步。准备记录固定的项目和输入目录；默认回传到输入目录，按远程相对路径归位。可显式指定其他 `destination`，但目标不能包含状态目录，也不能位于状态目录内部（该 run 的受管 outputs 除外）；回传输入目录同样不能包含状态目录。回传到输入目录仅允许 `error`／`merge`；`error` 原子安装且拒绝覆盖并发创建的同名文件，`merge` 原子替换同名结果，两者都禁止覆盖上传清单中的输入和跟随目标符号链接。完整文件先暂存到目标文件系统再安装，目标目录组件通过目录 fd 打开并拒绝符号链接。多文件安装并非整体原子操作，安装中断可能留下部分结果；sync_installation 持久化目标、备份、文件身份和哈希，按原参数重试可接续，发现其他写入者修改结果则拒绝覆盖。
 
 暂存在 `A/.hpc-mcp-sync/<run_id>/<attempt_id>/`，成功后移走或删除，并移除空父目录；失败暂存保留。`job_cache_cleanup(run_id, older_than_seconds=86400, dry_run=true)` 在作业锁下预览或清理过期暂存，返回路径及字节数。CLI 为 `cache-cleanup RUN_ID --older-than-seconds N [--apply]`。仅处理登记作业的暂存目录，不删除快照、历史、已安装结果或远程目录；不内置定时器。未指定项目的旧作业也可清理状态目录中的 `sync-attempts/`。
 
@@ -334,6 +334,20 @@ gaussian_prepare 不再内置。安装并激活 gaussian handler 后，advanced 
 同步自动执行预检，估算两倍所选大小加 reserve 的空间需求；目标和暂存不同文件系统时分别检查。传输中周期性检查暂存占用，超过总量上限两倍则终止进程，增长可能有检查间隔内的超量，非硬磁盘配额。rsync 单文件限制及下载后的路径／大小复核避免静默遗漏被当作成功。
 
 失败暂存只有在完整选项及源清单 fingerprint 一致时复用；拒绝 symlink，私有 `.hpc-mcp-transfer-partial` 从不安装成结果。源变化或选项变化创建新暂存。传输完成后重新查询状态并比对源大小／mtime，再安装结果；这不是远程原子快照，元数据不变的并发写入仍可能无法识别。`stable_only=true` 要求前后都确认终态，否则保留缓存返回失败。默认允许运行中同步，但结果是 partial。`sync_transfer_stats` 可报告 rsync 统计的 transferred_bytes／reused_bytes；`sync_progress` 报告暂存或已安装大小，不代表网络实时速度。
+
+安装阶段中断后，按原参数与 resume=true 重试 job_sync；系统先复核授权、路径和远程 fingerprint，按已记录的 inode 与 SHA-256 识别本次已安装文件，补齐剩余文件并登记完成，最后才删除下载暂存。pending 安装不允许静默改换选项或覆盖其他写入者的新文件；冲突保留证据，先人工核查。成功登记后暂存清理失败记录 sync_staging_cleanup_error，已安装结果仍为成功。系统不是整批事务回滚，也不能自动恢复更新前未记录安装日志的中断。
+
+## 审批与历史维护
+
+settings_get.approval / approval_status 显示 client_attested 或 external_signed。后者要求受保护的启动参数 --approval-policy 或 HPC_MCP_APPROVAL_POLICY，以及独立保管的签名私钥。approval_request 返回精确动作的签名模板，approval_import 只验证并保存凭据，不执行动作；application_activation_plan 返回完整激活材料与 approval_token。角色、签名格式、委托和迁移边界见 [外部签名审批](EXTERNAL_APPROVALS.md)。
+
+job_get(run_id, events_after_id=0, event_limit=100) 的事件最多 100 条（可指定 1..500），events_next_after_id 为后续页游标。history_events(run_id, after_id=0, limit=100) 返回 events 与 next_after_id；事件包含稳定 id，索引支持按 run 和游标读取。事件页还有约 1 MiB 的内容预算；超过 64 KiB 的单条 detail 返回 detail_omitted=true 与原始字节数/SHA-256。history_event_detail(run_id,event_id,offset=0,limit=16384) 按字符读取原 JSON 文本，拼接 text 后解析，next_offset 为下一段；原始证据仍在数据库或归档中。
+
+常规 status_observed、status_unavailable、sync_progress、sync_installation_progress 保留紧凑摘要，每个 run 合计保留最近 1000 条；完整最新诊断和安装日志仍在 run 中。授权、撤销、计划、完成等审计事件不会自动删除。
+
+history_archive(older_than_seconds=86400, limit=1000, dry_run=true) 预览或显式归档旧事件，每次最多 1000 条和 16 MiB 未压缩内容。预览返回 plan 和 approval_token，绑定精确事件 ID、证据摘要和参数。应用时先在 state/history-archives 写入完整 JSONL gzip、fsync 文件与目录，再在同一数据库事务中登记 SHA-256 并删除对应事件行。写入失败保留数据库事件；归档成功保留 run、结果、审批凭据。history_archives(limit=50, offset=0) 列出归档路径与哈希。SQLite 删除旧事件后复用空页，不自动 VACUUM；归档文件继续占用磁盘，保留/外部备份应按用户需要安排。
+
+CLI 对应 history-events RUN_ID --after-id ID --limit 100、history-archive --older-than-seconds 86400 --limit 1000（加 --apply 执行）、history-archives。严格签名模式下，实际归档需要匹配精确预览的 history_archive 签名；默认模式需由调用者先取得用户授权。SSH stdout/stderr 通过有界管道读取，每条流最多 ssh_output_limit 字节，超限立即终止本次进程组并返回 output_limit，不写入无界临时文件。
 
 `job_sync_start(run_id,options={})` 接受公开 job_sync 参数对象，启动独立进程，返回持久 operation_id。`job_sync_operation(operation_id)` 返回 queued/running/succeeded/failed/interrupted、progress 和 result/error。一个 run 仅允许一个已登记活动操作；中断后先查询再重试。重启 MCP 不终止既有 worker；机器关机不会继续传输，未结束操作需核查后恢复，不会自动提交计算任务。操作历史保存配置快照、配置路径和精确授权 token；执行时重读配置并检查 token，不存 SSH 密钥；run.last_sync_operation 保存最近操作编号，agent 重启后可从 job_get 找回。
 

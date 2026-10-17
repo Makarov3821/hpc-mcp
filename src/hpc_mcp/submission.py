@@ -122,6 +122,8 @@ def receipt(jobs, run, verify_files=True):
         raise SubmissionError('submission_authorization_invalid', 'Authorization is not bound to this exact run and plan.')
     if digest(build(jobs, run, plan['automation'], verify_files)) != token:
         raise SubmissionError('submission_plan_changed', 'Inputs, configuration, output policy or task changed; review and confirm a new plan.')
+    from .approvals import verify_run
+    verify_run(jobs.history, run, approved)
     return plan, approved
 
 
@@ -135,8 +137,9 @@ def plan_locked(jobs, run, permissions=None):
         changes['submission_authorization'] = None
     jobs.history.update(run['run_id'], 'submission_plan_frozen', **changes)
     return {'ok': True, 'run_id': run['run_id'], 'plan': plan, 'review_token': token,
+            'approval': jobs.history.approvals.describe(),
             'authorized': bool(jobs.history.get(run['run_id']).get('submission_authorization')),
-            'notes': ['User confirmation is client-attested, not identity authentication.',
+            'notes': ['Use the configured approval mode. client_attested is not identity authentication.',
                       'This plan does not authorize cancelling tasks or changing remote account permissions.']}
 
 
@@ -153,7 +156,15 @@ def authorize_locked(jobs, run, token, note, workflow_context=None):
         if not workflow_context or workflow_context.get('workflow_id') != owned['workflow_id']:
             raise SubmissionError('submission_workflow_owned', 'Confirm this task through workflow_review and workflow_start.')
     approved = {'run_id': run['run_id'], 'plan_token': token, 'time': now(), 'note': note,
-                'workflow': workflow_context}
+                'workflow': ({k: v for k, v in workflow_context.items() if k != 'external_approval'}
+                             if workflow_context else None)}
+    from .approvals import require, verify_run
+    proof = (workflow_context or {}).get('external_approval')
+    if proof is None:
+        proof = require(jobs.history, 'job_authorize', run['run_id'], token)
+    if proof:
+        approved['external_approval'] = proof
+        verify_run(jobs.history, run, approved)
     jobs.history.update(run['run_id'], 'submission_authorized', submission_authorization=approved)
     return {'ok': True, 'run_id': run['run_id'], 'authorization': approved}
 

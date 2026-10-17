@@ -84,11 +84,46 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     lifecycles = LifecycleService(jobs)
     from .batch import BatchService, BatchError
     batches = BatchService(jobs)
+    from .approvals import ApprovalError
+
+    def approval_error(error):
+        return {'ok': False, 'error': error.code, 'message': str(error),
+                'approval_request': error.request}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def approval_status() -> dict[str, Any]:
+        """Read approval mode and public-key roles; no private keys are stored by this service."""
+        return {'ok': True, 'approval': jobs.history.approvals.describe()}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                             idempotentHint=False, openWorldHint=False))
+    def approval_request(action: str, subject: str, token: str) -> dict[str, Any]:
+        """Create claims for a separately controlled signer to endorse after reviewing exact material.
+
+        This grants no permission. The signer fills actor/issued_at/expires_at and signs canonical JSON.
+        """
+        return {'ok': True, 'claims': jobs.history.approvals.request(action, subject, token)}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def approval_import(envelope: dict[str, Any]) -> dict[str, Any]:
+        """Verify and retain an external signature. Does not execute the endorsed action.
+
+        Never request a private signing key; receive only claims and their Ed25519 signature.
+        """
+        from .approvals import register
+        try:
+            return register(jobs.history, envelope)
+        except ApprovalError as error:
+            return approval_error(error)
 
     def batch_call(method, *args):
         from .submission import SubmissionError
         try:
             return method(*args)
+        except ApprovalError as error:
+            return approval_error(error)
         except (BatchError, ApplicationError, SubmissionError) as error:
             return {'ok': False, 'error': error.code, 'message': str(error)}
         except (ValueError, OSError) as error:
@@ -205,12 +240,16 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         from .submission import SubmissionError
         try:
             return method(*args)
+        except ApprovalError as error:
+            return approval_error(error)
         except SubmissionError as exc:
             return {'ok': False, 'error': exc.code, 'message': str(exc)}
 
     def application_call(method, *args):
         try:
             return method(*args)
+        except ApprovalError as error:
+            return approval_error(error)
         except ApplicationError as exc:
             return {'ok': False, 'error': exc.code, 'message': str(exc), **exc.details}
         except (ValueError, OSError) as exc:
@@ -223,6 +262,8 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
     def setup_call(method, *args):
         try:
             return method(*args)
+        except ApprovalError as error:
+            return approval_error(error)
         except SetupFlowError as exc:
             return {'ok': False, 'error': exc.code, 'message': str(exc)}
         except ApplicationError as exc:
@@ -354,6 +395,12 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
         Do not invent confirmation. Does not submit or imply real application validation.
         """
         return application_call(applications.activate, application, version, review_token, confirmation_note)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                             idempotentHint=True, openWorldHint=False))
+    def application_activation_plan(application: str, version: int) -> dict[str, Any]:
+        """Read exact activation material and its token for optional external approver endorsement."""
+        return application_call(applications.activation_plan, application, version)
 
     @server.tool()
     def application_prepare(application: str, cluster: str, input_path: str, project_root: str,
@@ -635,6 +682,9 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
             Cluster("example", "ssh-alias", "lsf", "/shared/jobs"))
         settings.pop("name")
         return {"ok": True, "settings": settings, "state_dir": str(jobs.history.root),
+                'approval': jobs.history.approvals.describe(),
+                'history': {'telemetry_events_per_run': 1000, 'event_page_default': 100,
+                            'archive_max_events': 1000, 'archive_max_bytes': 16 * 1024 ** 2},
                 "tool_catalog": {"profile": tool_profile, "default_calculation_route": "batch",
                     "advanced_enabled": tool_profile == 'advanced',
                     "hidden_tools": sorted(hidden_tools),
@@ -956,9 +1006,42 @@ def create_server(service: ClusterService, jobs: JobService, config: ConfigManag
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True,
                                              destructiveHint=False, openWorldHint=False))
-    def job_get(run_id: str) -> dict[str, Any]:
+    def job_get(run_id: str, events_after_id: int = 0, event_limit: int = 100) -> dict[str, Any]:
         """Read a saved plan, file manifests and execution events without querying the cluster."""
-        return jobs.job_get(run_id)
+        return jobs.job_get(run_id, events_after_id, event_limit)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                            idempotentHint=True, openWorldHint=False))
+    def history_events(run_id: str, after_id: int = 0, limit: int = 100) -> dict[str, Any]:
+        """Read indexed event pages. Polling telemetry retains the latest 1000 entries per run."""
+        return jobs.history.event_page(run_id, after_id, limit)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                            idempotentHint=True, openWorldHint=False))
+    def history_event_detail(run_id: str, event_id: int, offset: int = 0,
+                             limit: int = 16384) -> dict[str, Any]:
+        """Read a large event's original JSON text in bounded character chunks; concatenate text.
+
+        Event pages replace details larger than 64 KiB with size/hash metadata. Archives retain originals.
+        """
+        return jobs.history.event_detail(run_id, event_id, offset, limit)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                                            idempotentHint=False, openWorldHint=False))
+    def history_archive(older_than_seconds: int = 86400, limit: int = 1000,
+                        dry_run: bool = True) -> dict[str, Any]:
+        """Preview explicit event archival. Apply writes durable gzip evidence before removing rows.
+
+        Does not delete runs, results or archive files. At most 1000 events / 16 MiB per call.
+        Obtain user approval before dry_run=false; history_archives lists retained evidence.
+        """
+        return jobs.history.archive_events(older_than_seconds, limit, dry_run)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                            idempotentHint=True, openWorldHint=False))
+    def history_archives(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """List archived event paths, row ranges and SHA-256 checksums."""
+        return jobs.history.archives(limit, offset)
 
     @server.tool()
     def job_status(run_id: str) -> dict[str, Any]:

@@ -17,6 +17,7 @@ Issues = "https://github.com/Makarov3821/hpc-mcp/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp>=2,<3"]
+approval = ["cryptography>=50,<51"]
 
 [project.scripts]
 hpc-mcp = "hpc_mcp.cli:main"

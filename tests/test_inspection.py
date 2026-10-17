@@ -1,6 +1,8 @@
 from pathlib import Path
+from dataclasses import replace
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -177,16 +179,15 @@ class TransportTests(unittest.TestCase):
         self.cluster = Cluster("a", "alias", "lsf", "/jobs")
 
     def test_real_shell_framing_and_remote_exit_status(self):
-        real_run = subprocess.run
+        real_run = subprocess.Popen
         captured = []
 
         def local_shell(argv, **kwargs):
             captured.append(argv)
             # Exercise the actual framed remote shell without contacting a server.
-            script = b"printf 'login banner\\n'\n" + kwargs.pop("input")
-            return real_run(["bash", "-s"], input=script, **kwargs)
+            return real_run(["bash", "-c", "printf 'login banner\\n'; bash -s"], **kwargs)
 
-        with patch("hpc_mcp.ssh.subprocess.run", side_effect=local_shell):
+        with patch("hpc_mcp.ssh.subprocess.Popen", side_effect=local_shell):
             result = SSHTransport().run(self.cluster, "printf 'payload\\n'; exit 7")
         self.assertEqual(result.stdout, "payload\n")
         self.assertEqual(result.returncode, 7)
@@ -196,31 +197,59 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(captured[0][-2:], ["alias", "bash -s"])
 
     def test_initialization_failure(self):
-        real_run = subprocess.run
+        real_run = subprocess.Popen
         cluster = Cluster("a", "alias", "lsf", "/jobs", ("/nonexistent-hpc-mcp-init",))
-        with patch("hpc_mcp.ssh.subprocess.run",
+        with patch("hpc_mcp.ssh.subprocess.Popen",
                    side_effect=lambda argv, **kw: real_run(["bash", "-s"], **kw)):
             result = SSHTransport().run(cluster, "printf should-not-run")
         self.assertFalse(result.ok)
         self.assertEqual(result.error, "remote_initialization_failed")
 
     def test_timeout_and_unavailable_ssh(self):
-        for exception, expected in [(subprocess.TimeoutExpired("ssh", 1), "timeout"),
-                                    (FileNotFoundError("ssh"), "ssh_unavailable")]:
-            with self.subTest(expected=expected), patch("hpc_mcp.ssh.subprocess.run",
-                                                      side_effect=exception):
-                self.assertEqual(SSHTransport().run(self.cluster, "true").error, expected)
+        with patch('hpc_mcp.ssh.subprocess.Popen', side_effect=FileNotFoundError('ssh')):
+            self.assertEqual(SSHTransport().run(self.cluster, 'true').error, 'ssh_unavailable')
+        real = subprocess.Popen
+        processes = []
+        def local(argv, **kwargs):
+            process = real(['bash', '-s'], **kwargs)
+            processes.append(process)
+            return process
+        with patch('hpc_mcp.ssh.subprocess.Popen', side_effect=local):
+            result = SSHTransport().run(replace(self.cluster, command_timeout=1), 'sleep 30')
+        self.assertEqual(result.error, 'timeout')
+        self.assertEqual(result.returncode, -1)
+        self.assertIsNotNone(processes[0].poll())
 
     def test_large_output_is_not_parsed(self):
-        def oversized(argv, **kwargs):
-            kwargs["stdout"].write(b"x" * 1_048_577)
-            return subprocess.CompletedProcess(argv, 0)
+        real = subprocess.Popen
+        processes = []
+        def local(argv, **kwargs):
+            process = real(['bash', '-s'], **kwargs)
+            processes.append(process)
+            return process
+        for stream in ('stdout', 'stderr'):
+            with self.subTest(stream=stream), patch('hpc_mcp.ssh.subprocess.Popen',
+                                                   side_effect=local):
+                started = time.monotonic()
+                command = 'while true; do printf "%4096s" x; done'
+                result = SSHTransport().run(replace(self.cluster, ssh_output_limit=8192),
+                    command + (' >&2' if stream == 'stderr' else ''))
+                self.assertLess(time.monotonic() - started, 5)
+            self.assertFalse(result.ok)
+            self.assertEqual(result.error, 'output_limit')
+            self.assertEqual(result.stdout, '')
+            self.assertLessEqual(len(result.stderr.encode()), 4000)
+            self.assertIsNotNone(processes[-1].poll())
 
-        with patch("hpc_mcp.ssh.subprocess.run", side_effect=oversized):
-            result = SSHTransport().run(self.cluster, "true")
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error, "output_limit")
-        self.assertEqual(result.stdout, "")
+    def test_large_stdin_and_simultaneous_streams_do_not_deadlock(self):
+        real = subprocess.Popen
+        with patch('hpc_mcp.ssh.subprocess.Popen',
+                   side_effect=lambda argv, **kwargs: real(['bash', '-s'], **kwargs)):
+            command = "printf 'out\\n'; printf 'err\\n' >&2\n" + '# comment\n' * 20000
+            result = SSHTransport().run(self.cluster, command)
+        self.assertTrue(result.ok, result)
+        self.assertEqual(result.stdout, 'out\n')
+        self.assertEqual(result.stderr, 'err\n')
 
     def test_path_with_shell_metacharacters_is_literal(self):
         with tempfile.TemporaryDirectory() as root:

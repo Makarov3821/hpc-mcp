@@ -380,8 +380,15 @@ class ApplicationService:
                 raise ValueError('pass requires no unapproved differences or unresolved behavior')
             if report['verdict'] == 'revise' and not (report['differences'] or report['unresolved']):
                 raise ValueError('revise requires actionable differences or unresolved behavior')
+            from .approvals import require, digest as approval_digest
+            review_scope = approval_digest({'packet_sha256': approval_digest(packet), 'report': report})
+            proof = require(self.jobs.history, 'application_review_submit',
+                            f'{application}/{version}', review_scope)
             evidence = {'review_token': review_token, 'submitted_at': now(), 'report': report,
                 'scope': 'external_fresh_context_static_review', 'provenance': 'client_attested'}
+            if proof:
+                evidence.update(external_approval=proof, packet_sha256=approval_digest(packet),
+                                provenance='external_signed')
             if _setup_operation_id is not None: evidence['setup_operation_id'] = _setup_operation_id
             record.setdefault('reviews', []).append(evidence)
             record['review'] = evidence
@@ -389,6 +396,45 @@ class ApplicationService:
             self.atomic(path / 'record.json', record)
             self.event('application_reviewed', {'application': application, 'version': version, 'verdict': report['verdict']})
             return {'ok': True, 'application': record, 'next_step': 'user_confirmation' if report['verdict'] == 'pass' else 'revise_install_new_version_and_review'}
+
+    def _verify_review(self, record):
+        from .approvals import digest as approval_digest
+        review = record.get('review') or {}
+        proof = review.get('external_approval')
+        if not self.jobs.history.approvals.path and proof is None:
+            return
+        packet_sha = approval_digest(record['review_request'])
+        if packet_sha != review.get('packet_sha256'):
+            raise ValueError('externally endorsed review packet changed')
+        self.jobs.history.approvals.verify(proof, 'application_review_submit',
+            f'{record["application"]}/{record["version"]}',
+            approval_digest({'packet_sha256': packet_sha, 'report': review['report']}),
+            accepted_at=review['submitted_at'])
+
+    def _activation_plan(self, record):
+        self._verify_review(record)
+        self.jobs.refresh_clusters()
+        settings = {}
+        for cluster in record['manifest']['clusters']:
+            if cluster not in self.jobs.clusters or self.jobs.clusters[cluster].scheduler != record['manifest']['scheduler']:
+                raise ValueError('configure each declared cluster with matching scheduler before activation')
+            settings[cluster] = digest(asdict(self.jobs.clusters[cluster]))
+        try:
+            dependencies = self.runner.dependencies(record['manifest'])
+        except RunnerError as exc:
+            raise ApplicationError(exc.code, str(exc), **exc.details) from exc
+        return {'application': record['application'], 'version': record['version'],
+                'review_token': record['review_token'], 'review_sha256': digest(record.get('review')),
+                'manifest': record['manifest'], 'files': record['files'],
+                'cluster_settings': settings, 'dependencies': dependencies,
+                'runner_settings': asdict(self.runner.settings())}
+
+    def activation_plan(self, application, version):
+        from .approvals import digest as approval_digest
+        with self.locked():
+            record, _ = self.record(application, version)
+            plan = self._activation_plan(record)
+            return {'ok': True, 'plan': plan, 'approval_token': approval_digest(plan)}
 
     def activate(self, application, version, review_token, confirmation_note, _setup_flow_id=None, _setup_expected_clusters=None):
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
@@ -400,18 +446,19 @@ class ApplicationService:
                     or record.get('review', {}).get('review_token') != review_token
                     or record.get('review', {}).get('report', {}).get('verdict') != 'pass'):
                 raise ValueError('passed independent review of the exact version required before activation')
-            settings = {}
-            for cluster in record['manifest']['clusters']:
-                if cluster not in self.jobs.clusters or self.jobs.clusters[cluster].scheduler != record['manifest']['scheduler']:
-                    raise ValueError('configure each declared cluster with matching scheduler before activation')
-                settings[cluster] = digest(asdict(self.jobs.clusters[cluster]))
+            plan = self._activation_plan(record)
+            settings = plan['cluster_settings']
             if _setup_expected_clusters is not None and settings != _setup_expected_clusters:
                 raise ApplicationError('application_cluster_changed', 'Cluster changed during setup confirmation; review current settings.')
-            try:
-                pinned_dependencies = self.runner.dependencies(record['manifest'])
-            except RunnerError as exc:
-                raise ApplicationError(exc.code, str(exc), **exc.details) from exc
-            record.update(runner_dependencies=pinned_dependencies, status='active', confirmation_note=confirmation_note, confirmed_at=now(), cluster_settings=settings)
+            from .approvals import require, setup_proof, digest as approval_digest
+            proof = (setup_proof(self.jobs.history, _setup_flow_id, application, version, review_token, plan)
+                     if _setup_flow_id else require(self.jobs.history, 'application_activate',
+                                                   f'{application}/{version}', approval_digest(plan)))
+            record.update(runner_dependencies=plan['dependencies'], status='active',
+                confirmation_note=confirmation_note, confirmed_at=now(), cluster_settings=settings)
+            if proof:
+                record.update(activation_approval=proof, activation_plan=plan,
+                              activation_flow_id=_setup_flow_id)
             self.atomic(path / 'record.json', record)
             index = self.read_index(); index[application]['active'] = version
             index[application].setdefault('bindings', {}).update({c: version for c in record['manifest']['clusters']})
@@ -428,6 +475,20 @@ class ApplicationService:
             record, path = self.record(application, chosen)
             if record['status'] != 'active':
                 raise ApplicationError('application_not_active', 'User confirmation required.')
+            proof = record.get('activation_approval')
+            if self.jobs.history.approvals.path or proof:
+                plan = self._activation_plan(record)
+                if plan != record.get('activation_plan'):
+                    raise ValueError('signed activation plan changed; review and reactivate')
+                if record.get('activation_flow_id'):
+                    from .approvals import setup_proof
+                    setup_proof(self.jobs.history, record['activation_flow_id'], application,
+                                record['version'], record['review_token'], plan)
+                else:
+                    from .approvals import digest as approval_digest
+                    self.jobs.history.approvals.verify(proof, 'application_activate',
+                        f'{application}/{record["version"]}', approval_digest(plan),
+                        accepted_at=record['confirmed_at'])
             target = self.jobs.clusters.get(cluster)
             if target is None or cluster not in record['manifest']['clusters'] or target.scheduler != record['manifest']['scheduler']:
                 raise ApplicationError('application_cluster_mismatch', 'Plugin does not match this cluster/scheduler.')

@@ -246,7 +246,8 @@ class SetupWorkflowService(SetupFlowService):
                             'version':business['version'],'review_token':business['review_token'],
                             'manifest':reviewed['manifest'], 'files':reviewed['files'],
                             'review_sha256':digest(reviewed['review']), 'cluster_settings':business['cluster_settings'],
-                            'validation': 'unverified_static_review_only'}
+                            'validation': 'unverified_static_review_only',
+                            'activation_plan': self.apps._activation_plan(reviewed)}
                     business.update(stage='awaiting_confirmation',confirmation_plan=plan,confirmation_token=digest(plan))
             elif action == 'confirm':
                 self._validate_confirmation(record, payload['confirmation_token'], recovery=True)
@@ -274,6 +275,10 @@ class SetupWorkflowService(SetupFlowService):
         business=record['business'];plan=business.get('confirmation_plan')
         if not plan or token != business.get('confirmation_token') or digest(plan) != token:
             raise SetupFlowError('setup_flow_confirmation_changed','Confirmation token differs from frozen plan.')
+        confirmation = business.get('confirmation')
+        if confirmation and (self.history.approvals.path or confirmation.get('external_approval')):
+            self.history.approvals.verify(confirmation.get('external_approval'),
+                'setup_flow_confirm', record['flow_id'], token, accepted_at=confirmation['time'])
         if record['kind']=='cluster_setup':
             if not self.config: raise ValueError('configuration persistence is unavailable')
             current=self._baseline(plan['cluster']);desired=digest({'name':plan['cluster'],**plan['settings']})
@@ -291,6 +296,8 @@ class SetupWorkflowService(SetupFlowService):
             installed,_=self.apps.record(plan['application'],plan['version'])
             if installed['review_token'] != plan['review_token'] or digest(installed.get('review'))!=plan['review_sha256'] or installed['review']['report']['verdict']!='pass':
                 raise SetupFlowError('setup_flow_review_changed','Independent review changed; request a new review.')
+            if plan.get('activation_plan') != self.apps._activation_plan(installed):
+                raise SetupFlowError('setup_flow_review_changed', 'Activation dependencies or runner settings changed; review again.')
 
     def confirm(self, flow_id, expected_revision, confirmation_token, confirmation_note):
         if not isinstance(confirmation_note,str) or not confirmation_note.strip() or len(confirmation_note)>4096:raise ValueError('explicit bounded user confirmation note required')
@@ -301,6 +308,10 @@ class SetupWorkflowService(SetupFlowService):
             self.revision(record,expected_revision);self._stage(record,('awaiting_confirmation',))
             self._validate_confirmation(record,confirmation_token)
             business=dict(record['business']);business['confirmation']={'time':now(),'note':confirmation_note,'token':confirmation_token}
+            from .approvals import require
+            proof = require(self.history, 'setup_flow_confirm', flow_id, confirmation_token)
+            if proof:
+                business['confirmation']['external_approval'] = proof
             business['operation']={'id':uuid.uuid4().hex,'action':'confirm','payload':{'confirmation_token':confirmation_token,'confirmation_note':confirmation_note}}
             record=self._save(record,'confirmation_recorded',business=business,pending_action='resume_if_interrupted')
             return {'ok':True,'flow':self._execute(record)}

@@ -80,6 +80,11 @@ class HandlerRunner:
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
             raise ValueError('user confirmation note required for runner settings')
         self.settings()  # reject existing symlink/invalid configuration
+        from .history import History
+        from .approvals import require
+        from .onboarding_store import digest
+        require(History(self.state), 'handler_runner_configure', 'handler-runner',
+                digest(asdict(configured)))
         self.state.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode='w', dir=self.state, delete=False) as stream:
             temporary = Path(stream.name)

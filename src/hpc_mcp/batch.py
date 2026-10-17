@@ -306,10 +306,11 @@ class BatchService:
         result = {'ok': bool(value.get('frozen_plan')), 'batch_id': value['batch_id'],
             'stage': value['stage'], 'review_token': value['review_token'], 'tasks': tasks,
             'policies': policies,
+            'approval': self.history.approvals.describe(),
             'last_error': value.get('last_error'), 'coordinator': {'start': value['request']['start_monitor'],
                 'settings': value['monitor_settings']}, 'limits': value['request']['limits'],
             'notes': ['No upload or submission during planning. All tasks must prepare successfully.',
-                'Confirm this exact batch token once; approvals remain client-attested.',
+                'Confirm this exact batch token once using the configured approval mode.',
                 'compact=false returns every frozen script and manifest without regeneration.']}
         if not compact:
             result['plan'] = value.get('frozen_plan')
@@ -334,12 +335,14 @@ class BatchService:
                 for item in value['tasks'].values():
                     receipt(self.jobs, self.history.get(item['run_id']))
                 return self.status(batch_id)
+            from .approvals import require
+            proof = require(self.history, 'batch_start', batch_id, review_token)
             if value['stage'] not in ('awaiting_confirmation', 'starting'):
                 raise ValueError('use batch_resume for a paused/failed batch or batch_review for a new approval')
             self.save(value, stage='starting', last_error=None)
             try:
                 self.workflows.start(value['workflow_id'], workflow['review_token'],
-                    confirmation_note, _enable=False)
+                    confirmation_note, _enable=False, _external_approval=proof)
                 paused = [rid for rid, task in workflow['tasks'].items()
                     if task['stage'] == 'paused' and self.history.get(rid)['phase'] in
                     ('prepared', 'uploading', 'upload_failed')]

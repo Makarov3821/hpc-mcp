@@ -264,7 +264,8 @@ class WorkflowService:
                     db.execute('UPDATE workflows SET data=? WHERE id=?', (json.dumps(value), workflow_id))
         return self.get(workflow_id)
 
-    def start(self, workflow_id, review_token, confirmation_note, _enable=True):
+    def start(self, workflow_id, review_token, confirmation_note, _enable=True,
+              _external_approval=None):
         from .submission import build, authorize_locked
         if not isinstance(confirmation_note, str) or not confirmation_note.strip() or len(confirmation_note) > 4096:
             raise ValueError('record explicit user authorization for this automatic submission plan')
@@ -272,6 +273,8 @@ class WorkflowService:
             value = self.get(workflow_id)['workflow']
             if value['review_token'] != review_token:
                 raise ValueError('workflow review token differs')
+            from .approvals import workflow_proof
+            proof = workflow_proof(self.jobs.history, value, _external_approval)
             self._control(workflow_id, enabled=False)
             if value['plan'].get('version') != 2:
                 raise ValueError('legacy workflow requires workflow_review and a new confirmation')
@@ -289,7 +292,8 @@ class WorkflowService:
                     self.jobs.history.update(rid, 'workflow_submission_plan_frozen', submission_plan=plan,
                                              submission_plan_token=token, submission_authorization=None)
                     authorize_locked(self.jobs, self.jobs.history.get(rid), token, confirmation_note,
-                        {'workflow_id': workflow_id, 'review_token': review_token})
+                        {'workflow_id': workflow_id, 'review_token': review_token,
+                         **({'external_approval': proof} if proof else {})})
                 self._control(workflow_id, enabled=_enable, authorization_error=None, confirmation={'time': now(), 'note': confirmation_note, 'plan_token': review_token})
         return self.get(workflow_id)
 
