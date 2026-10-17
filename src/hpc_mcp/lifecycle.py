@@ -52,7 +52,7 @@ class LifecycleService:
                 ('sync_state', 'output_dir', 'output_manifest', 'sync_error', 'last_sync_operation')},
             'monitor_stage': (monitor or {}).get('stage'), 'pending_action': action,
             'cleanup': {'local': (monitor or {}).get('last_cleanup'),
-                'deferred': (monitor or {}).get('cleanup_deferred'),
+                'deferred': (monitor or {}).get('cleanup_deferred') or record.get('cleanup_deferred'),
                 'remote_removed': run.get('remote_removed', False)}}
 
     def list(self, limit=50, offset=0):
@@ -165,10 +165,13 @@ class LifecycleService:
                 if (plan['automation']['remote_cleanup'] and
                         entry.get('application_result', {}).get('status') == 'passed' and
                         run['state'] == 'succeeded' and not run.get('remote_removed')):
-                    self.save(run_id, stage='cleaning', failed_step=step)
-                    result = self.jobs.job_remote_cleanup(run_id, dry_run=False)
-                    if not result['ok']:
-                        raise ValueError(result.get('error') or 'Remote cleanup failed.')
+                    if not run.get('retention', {}).get('released'):
+                        self.save(run_id, cleanup_deferred='Retention claims remain; release before cleanup.')
+                    else:
+                        self.save(run_id, stage='cleaning', failed_step=step)
+                        result = self.jobs.job_remote_cleanup(run_id, dry_run=False)
+                        if not result['ok']:
+                            raise ValueError(result.get('error') or 'Remote cleanup failed.')
                 self.save(run_id, stage='complete', enabled=False, failed_step=None,
                     next_check_at=None, last_error=None, completed_at=now())
             except (ValueError, OSError) as error:

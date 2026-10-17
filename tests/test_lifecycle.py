@@ -61,8 +61,11 @@ class LifecycleTests(unittest.TestCase):
             self.engine.tick()
         self.fixture.advance()
 
-    def finish(self, rid):
+    def finish(self, rid, release=False):
         for _ in range(10):
+            run = self.jobs.history.get(rid)
+            if release and run['phase'] == 'submitted' and not run.get('retention', {}).get('released'):
+                test_jobs.release_retention(self.jobs, rid)
             self.cycle(rid)
             if self.life.get(rid)['lifecycle']['stage'] in ('complete', 'needs_attention'):
                 return self.life.get(rid)
@@ -108,12 +111,24 @@ class LifecycleTests(unittest.TestCase):
         self.criterion(rid)
         self.approve(rid, cleanup=True, remote=True)
         self.life.start(rid)
-        result = self.finish(rid)
+        result = self.finish(rid, release=True)
         self.assertEqual(result['lifecycle']['stage'], 'complete')
         self.assertEqual(result['application_result']['status'], 'passed')
         self.assertTrue(result['cleanup']['remote_removed'])
         self.assertFalse(Path(self.jobs.history.get(rid)['snapshot_dir']).exists())
         self.assertEqual((self.fixture.fixture.source / 'results/value.txt').read_text(), '42\n')
+
+    def test_successful_calculation_defers_cleanup_while_retained(self):
+        rid = self.prepare()
+        self.criterion(rid)
+        self.approve(rid, cleanup=True, remote=True)
+        self.life.start(rid)
+        result = self.finish(rid)
+        self.assertEqual(result['lifecycle']['stage'], 'complete')
+        self.assertIn('Retention', result['cleanup']['deferred'])
+        run = self.jobs.history.get(rid)
+        self.assertTrue(Path(run['remote_dir']).exists())
+        self.assertTrue(Path(run['snapshot_dir']).exists())
 
     def test_failed_application_preserves_data_even_if_scheduler_succeeds(self):
         rid = self.prepare()
@@ -155,7 +170,7 @@ class LifecycleTests(unittest.TestCase):
         self.approve(rid, cleanup=True, remote=True)
         self.life.start(rid)
         with patch.object(self.jobs, 'job_remote_cleanup', return_value={'ok': False, 'error': 'offline'}):
-            result = self.finish(rid)
+            result = self.finish(rid, release=True)
         self.assertEqual(result['lifecycle']['failed_step'], 'remote_cleanup')
         self.assertTrue(Path(self.jobs.history.get(rid)['remote_dir']).exists())
         self.life.start(rid, resume=True)

@@ -173,6 +173,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_cleanup_requires_verified_retained_results_and_preserves_project_outputs(self):
         run = self.submit()
+        test_jobs.release_retention(self.jobs, run['run_id'])
         test_jobs.authorized_watch(self.monitor, [run['run_id']], cleanup_policy={'storage_categories': ['snapshot'], 'storage_age_seconds': 0,
                                                           'sync_cache_age_seconds': 0})
         with patch.object(self.jobs, 'job_sync_start', side_effect=self.sync_immediately):

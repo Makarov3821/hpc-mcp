@@ -12,7 +12,8 @@ from .onboarding_store import digest
 
 ACTIONS = {'job_authorize', 'workflow_start', 'batch_start', 'setup_flow_confirm',
            'application_review_submit', 'application_activate', 'handler_runner_configure',
-           'history_archive'}
+           'history_archive', 'local_cache_cleanup', 'cluster_work_cleanup', 'retention_release',
+           'cluster_registry_reconcile'}
 
 
 def canonical(value):

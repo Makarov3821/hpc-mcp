@@ -163,6 +163,7 @@ class SubmissionTests(unittest.TestCase):
 
     def test_cleanup_preview_is_read_only_but_apply_requires_scope(self):
         self.submitted();self.jobs.job_sync(self.rid)
+        test_jobs.release_retention(self.jobs, self.rid)
         self.assertTrue(self.jobs.job_remote_cleanup(self.rid)['dry_run'])
         for operation in (lambda:self.jobs.job_remote_cleanup(self.rid,False),
                           lambda:self.jobs.job_storage_cleanup(self.rid,['snapshot'],0,False),

@@ -90,6 +90,19 @@ class ClusterService:
         response["ok"] = all(check["status"] != "failed" for check in checks)
         response["warnings"] = ["共享存储尚未通过计算节点验证；目录检查不创建文件。",
                                 "队列可见性不等于当前用户具备提交权限。"]
+        from .retention import RemoteRegistry
+        try:
+            registry = RemoteRegistry(self.transport).call(cluster, 'probe', initialize=False)
+            response['registry'] = registry
+            response['warnings'].extend(registry.get('warnings', []))
+        except ValueError as error:
+            response['registry'] = {'ok': False, 'message': str(error)}
+            response['warnings'].append('远程保留登记尚不可用；提交前需用 cluster_registry_probe 检查。')
+        aliases = [c.name for c in self.clusters.values()
+                   if c.name != name and c.work_root.rstrip('/') == cluster.work_root.rstrip('/')]
+        if aliases:
+            response['warnings'].append('其他集群配置使用相同 work_root 路径：' + ', '.join(aliases)
+                + '；请比较 workspace_id 确认是否共享存储，并统一登录节点。')
         return response
 
     def cluster_info(self, name: str) -> dict:

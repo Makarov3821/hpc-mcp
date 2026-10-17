@@ -39,7 +39,7 @@ OpenCode 数据目录与注册配置所在目录是两个位置，按客户端�
 
 输入快照可能包含大型 checkpoint，应按需要设置输入容量与保留策略。没有声明 project_root 的旧式任务，其输出也可能保存在 state 中；项目模式不额外在 state 留一份已归位输出。
 
-本地需要 Python 3.11+、Git、OpenSSH 和 rsync。注册 handler 默认隔离执行，需要 Linux、bubblewrap 和 libseccomp；远程需要 Bash、rsync、sha256sum 以及 LSF／Slurm 命令。非 Linux 环境默认不能执行 handler，可信兼容模式须用户明确接受扩大的宿主权限，Windows 原生运行尚未支持。详见 [执行器权限与配置](docs/HANDLER_RUNNER.md)。
+本地需要 Python 3.11+、Git、OpenSSH 和 rsync。注册 handler 默认隔离执行，需要 Linux、bubblewrap 和 libseccomp；远程需要 Bash、Python 3.8+（含标准库 sqlite3、fcntl）、rsync、sha256sum 以及 LSF／Slurm 命令。非 Linux 环境默认不能执行 handler，可信兼容模式须用户明确接受扩大的宿主权限，Windows 原生运行尚未支持。详见 [执行器权限与配置](docs/HANDLER_RUNNER.md)。
 
 ```bash
 python3 --version
@@ -102,7 +102,8 @@ HTTPS clone 不需要 GitHub SSH 身份。已经配置 GitHub SSH 的用户也�
 
 1. 创建 cluster_setup 流程，提供 SSH alias 和已有设置；流程中的 cluster_probe 保存身份、调度器、队列与目录证据。软件发现最多有界 module avail，不扫盘；缺失信息由用户补充。
 2. 新接入使用 setup_flow_create(kind="cluster_setup") → setup_flow_step(cluster_inputs/cluster_probe) → 展示计划 → 用户确认 setup_flow_confirm；常用队列、核数和软件环境从用户脚本进入应用配置，不推断执行方式。独立 cluster_configure/config-set 保留为显式手动设置入口。
-3. 用户提供提交脚本或 qg16／qvasp 源码，进入下面的标准应用注册流程。登录检查不表示计算节点软件已验证。
+3. 配置保存后调用 cluster_registry_probe，建立共享保留登记并核对实际登录节点。相同 work_root 路径的配置会提示核对；共享 workspace_id 出现不同节点时停止清理，第二节点的提交也会在上传前阻止。新任务默认保留，阶段结束后经用户确认 retention_release，再独立清理。详见 [跨 agent 保留登记](docs/RETENTION.md)。
+4. 用户提供提交脚本或 qg16／qvasp 源码，进入下面的标准应用注册流程。登录检查不表示计算节点软件已验证。
 
 ### 用户脚本 → 应用插件 → 固定执行
 
@@ -212,13 +213,15 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 ## 5. 验收 MCP 工具与作业流程
 
+日常维护使用默认可用的 local_cache_cleanup、cluster_work_cleanup：默认预览保留 7 天后的候选数据，用户确认精确 token 后批量执行。未明确释放保留声明的任务、活动任务、待恢复安装和未校验的结果保留；最新归位输出、项目输入与历史不删。集群工具仅清理已登记的 work_root/run_id，不清空根目录或未知文件夹。类别、筛选、签名审批及 CLI 见 [缓存与工作目录清理](docs/MAINTENANCE.md)。
+
 默认 `serve` 使用 `batch` 工具模式：单个和多个输入统一走 batch_plan／batch_start／batch_status，不暴露 application_prepare、专属 prepare、逐项 job_submit／job_sync、模板提交或高级 workflow 等替代计算入口。安装／适配管理、参数发现、历史、取消、诊断和全局监控仍可用。settings_get.tool_catalog 返回当前模式与隐藏列表。CLI 和内部单任务模块继续保留，任务历史与后台进程不变。
 
 仅在用户明确需要手动操作或高级依赖时，使用 CLI，或将服务启动参数改为 `serve --tool-profile advanced` 并重启 MCP；该模式恢复完整工具集，仍执行原有授权检查。模式在启动时固定，agent 不应为了绕过失败自动切换。升级后旧客户端的工具缓存需要重启刷新；已有 run 直接恢复，不重新提交。
 
 **日常计算默认使用 batch，单个输入也一样。** agent 生成输入卡后，同一请求、集群与项目的输入放入同一个 tasks 列表，一次 batch_plan；核对整批脚本／输入哈希、回传与自动动作，用户确认一个 token 后 batch_start。MCP 内部逐项准备、授权和登记，默认启动／复用后台协调器完成提交、跟踪、检查和归位，agent 只需按需 batch_status，无需逐个 prepare／submit／check，也不要为每张卡单独建批次。每项仍有独立 run 和远程目录；准备失败或输出冲突阻止整批提交，重复请求不会重交。完整参数、定向恢复和 CLI 见 [批量计算](docs/BATCH.md)。低层工具用于用户明确要求的手动操作、仅准备、已有 run 恢复或高级依赖流程；已有 run 不重新准备成新批次。
 
-需要 agent 退出后仍能推进完整任务时，先在 job_submission_plan 中明确批准 auto_submit／auto_sync 及回传、清理范围，再 job_authorize、job_lifecycle_start、monitor_start。用 job_lifecycle_get 读取持久进度和 pending_action；遇到 needs_attention 检查 failed_step 后 job_lifecycle_resume，已确认作业不重交。调度状态、应用判据和同步结果分别返回；无判据为 unverified，失败保留诊断数据，自动清理只在调度成功、判据通过且输出校验后执行。详见 [计算生命周期与恢复](docs/LIFECYCLE.md)。
+需要 agent 退出后仍能推进完整任务时，先在 job_submission_plan 中明确批准 auto_submit／auto_sync 及回传、清理范围，再 job_authorize、job_lifecycle_start、monitor_start。用 job_lifecycle_get 读取持久进度和 pending_action；遇到 needs_attention 检查 failed_step 后 job_lifecycle_resume，已确认作业不重交。调度状态、应用判据和同步结果分别返回；无判据为 unverified，失败保留诊断数据，自动远程清理还要求共享保留声明全部释放，并在调度成功、判据通过且输出校验后执行。详见 [计算生命周期与恢复](docs/LIFECYCLE.md)。
 
 每个新会话先调用 `update_check`，若 `update_available=true`，向用户提示上游提交并用 `update_plan` 获取更新命令；网络失败代表未知，不应说已是最新。然后从客户端调用 `settings_get`、`cluster_list`、`cluster_check`、`cluster_info`。`settings_get` 暴露完整设置模板、配置路径和状态路径；`cluster_configure` 可持久化更新集群，立即作用于当前服务。
 
@@ -306,7 +309,7 @@ OpenCode 的 `timeout` 是工具发现超时（毫秒）；长耗时调用的执
 
 大文件先 `job_sync_preview` 检查选择、容量与空间，再 `job_sync`；需要后台传输时用 `job_sync_start`，保存 operation_id 并通过 `job_sync_operation` 查询。失败后先核对诊断与续传条件。结果归位及覆盖策略见第 5 节；完整限制见 [同步参考](docs/REFERENCE.md#同步预检续传与异步操作)。
 
-`job_cache_cleanup`、`job_storage_cleanup`、`input_cache_cleanup` 和 `job_remote_cleanup` 默认预览，核对并批准对应清理范围后才显式应用。删除输入快照会失去重放材料；远程清理只保护已经选择并校验的下载结果。参数与保护条件见 [存储参考](docs/REFERENCE.md#存储与远程清理)。
+`job_cache_cleanup`、`job_storage_cleanup`、`input_cache_cleanup` 和 `job_remote_cleanup` 默认预览，核对并批准对应清理范围后才显式应用。删除输入快照会失去重放材料；远程清理要求共享保留声明全部释放，且只保留已经选择并校验的下载结果。参数与保护条件见 [存储参考](docs/REFERENCE.md#存储与远程清理)。
 
 ### 显式启用常驻监控
 
@@ -371,6 +374,8 @@ Codex 的旧条目可用 `codex mcp remove xn02-clusters` 移除，再按第 4 �
 **已有 `.xn02/` 状态目录继续通过 `--state-dir /ABS/OLD_INSTALL/.xn02` 使用。** 不要仅为了改名移动状态目录：数据库记录包含输入快照和输出的绝对路径。旧远程回执仍能恢复和过滤，新作业使用 `.hpc-mcp-*` 回执。集群名和 SSH 别名（例如 `xn02`）属于用户的连接配置，无需改名。若仓库本身也搬过目录，应保留旧快照路径可访问，或先完成路径迁移再验收旧作业。
 
 ## 8. 卸载与数据清理
+
+清空本地状态前，先通过 retention_status 检查本安装的远程保留声明，并按用户意图释放或保留；持有者身份也在状态库中，丢失后其他安装不会自动接管。共享 work_root/.hpc-mcp-registry 不能作为本机缓存随卸载删除，详见 [保留登记](docs/RETENTION.md)。
 
 先调用 monitor_stop 并确认 stopped；若使用 systemd 托管，先按第 6 节的服务托管步骤禁用并移除用户单元。通过 job_sync_operation 确认已开始的 worker 完成或中断，再停止客户端中的本服务、解除注册并卸载 Python 包：
 

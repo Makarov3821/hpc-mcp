@@ -89,6 +89,10 @@ private_key 仅存在于独立签名端，上述片段不应在 agent 进程内�
 | application_activate | application/version | application_activation_plan.approval_token，包含来源、审阅证据、集群、依赖和 runner 设置 |
 | handler_runner_configure | handler-runner | SHA-256(canonical JSON(完整规范化 RunnerSettings))，不是部分配置对象 |
 | history_archive | events | history_archive 预览的 approval_token，绑定年龄/数量及精确事件 ID 和证据摘要；事件变化需重新预览签名 |
+| local_cache_cleanup | plan.subject（全局时为 local-cache，按集群筛选时为集群名） | 维护预览的 review_token，绑定确切缓存路径、身份、任务事实、保留规则和有效期；不批准计算 |
+| cluster_work_cleanup | 集群名 | 维护预览的 review_token，绑定完整配置、登记任务目录、已留存输出事实、保留时间和有效期；不批准计算 |
+| retention_release | 集群名 | 释放预览的 review_token，绑定工作区、配置、明确任务／持有者与声明版本；只释放指定声明，不删除数据 |
+| cluster_registry_reconcile | 集群名 | 冲突解除预览的 review_token，绑定工作区、配置和精确冲突记录；不释放声明或批准清理 |
 
 缺少签名的门禁返回 external_approval_required 和 approval_request，便于请求对应签名。
 review_submit 的签名覆盖原报告和原始审阅材料摘要，不能仅修改 reviewer_session 字符串通过。

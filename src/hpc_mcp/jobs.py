@@ -291,6 +291,13 @@ class JobService:
             staged = Path(run["snapshot_dir"])
             if file_manifest(staged) != run["manifest"]:
                 raise ValueError("prepared snapshot changed; prepare a new run")
+            # Register a durable remote hold before any upload or scheduler action.
+            from .retention import RetentionService
+            try:
+                RetentionService(self).register(run)
+            except ValueError as error:
+                return {"ok": False, "run": self.history.get(run_id),
+                        "error": "retention_registration_failed", "message": str(error)}
             qremote = shlex.quote(run["remote_dir"])
             self.history.update(run_id, "upload_started", phase="uploading")
             initialize = self.transport.run(cluster,
@@ -348,6 +355,8 @@ class JobService:
             scheduler_cluster=scheduler_cluster,
             state="pending", submission_response={"returncode": returncode, "stdout": stdout,
                                                   "stderr": stderr}, last_error=None)
+        from .retention import RetentionService
+        RetentionService(self).observe(updated)
         return {"ok": True, "run": updated}
 
     def job_recover(self, run_id: str) -> dict:
@@ -740,17 +749,38 @@ class JobService:
                            ("maintenance", now(), "input_cache_cleaned", json.dumps(result)))
         return result
 
-    def job_remote_cleanup(self, run_id: str, dry_run: bool = True) -> dict:
+    def job_remote_cleanup(self, run_id: str, dry_run: bool = True, *,
+                           _maintenance_token=None, _cleanup_cutoff=None, _lock_held=False,
+                           _registry_revision=None) -> dict:
         if type(dry_run) is not bool:
             raise ValueError("dry_run must be boolean")
-        with self.history.lock(run_id):
+        from contextlib import nullcontext
+        with nullcontext() if _lock_held else self.history.lock(run_id):
             run = self.history.get(run_id)
             if run.get("remote_removed"):
                 return {"ok": True, "already_removed": True, "run_id": run_id}
             if not dry_run:
-                from .submission import cleanup_guard
-                cleanup_guard(self, run, 'remote')
+                if _maintenance_token is not None:
+                    from .maintenance import remote_grant
+                    cutoff = remote_grant(self, run, _maintenance_token)
+                    if _cleanup_cutoff != cutoff:
+                        raise ValueError('remote retention cutoff differs from approved maintenance')
+                else:
+                    from .submission import cleanup_guard
+                    cleanup_guard(self, run, 'remote')
             cluster = self._cluster(run)
+            from .retention import RetentionService, registration_facts
+            retention = RetentionService(self)
+            shared = retention.status(run['cluster'], [run_id])
+            claim = shared['tasks'][0]
+            identity_matches = (claim.get('origin') == registration_facts(run)
+                and shared['workspace_id'] == run.get('retention', {}).get('workspace_id'))
+            if claim.get('state') == 'deleted' and identity_matches:
+                if not dry_run:
+                    self.history.update(run_id, 'remote_cleanup_receipt_recovered', remote_removed=True)
+                return {'ok': True, 'already_removed': True, 'run_id': run_id}
+            if not claim.get('cleanup_allowed') or not identity_matches:
+                raise ValueError('remote task retained, unregistered or login host conflict; inspect retention_status')
             if run["phase"] != "submitted" or run.get("sync_state") != "complete":
                 raise ValueError("remote cleanup requires submitted run and complete selected-output sync")
             status = self.job_status(run_id)
@@ -781,6 +811,13 @@ class JobService:
                 f'test "$(cat {prefix}-exit)" = 0\n'
                 f'hpc_receipt_hash=$(sha256sum -- {prefix}-response)\n'
                 f'test "${{hpc_receipt_hash:0:64}}" = {digest}\n')
+            if _cleanup_cutoff is not None:
+                if type(_cleanup_cutoff) is not int or _cleanup_cutoff < 0:
+                    raise ValueError('invalid remote retention cutoff')
+                validation += (f'hpc_recent=$(find . -xdev -newermt @{_cleanup_cutoff} -print -quit) || exit 1\n'
+                    'if [ -n "$hpc_recent" ]; then\n'
+                    "printf '%s\\n' 'remote task contains files newer than the retention cutoff' >&2\n"
+                    'exit 1\nfi\n')
             # Validate the retained content remotely in the same command as deletion.
             # A completed scheduler job does not make its shared files immutable.
             for item in run['output_manifest']:
@@ -815,11 +852,13 @@ class JobService:
                     stderr='remote outputs changed or unsafe; resync before remote cleanup',
                     error='remote_outputs_unverified')
             else:
-                result = self.transport.run(cluster, command)
+                result = self.transport.run(cluster, command) if dry_run else retention.remote.cleanup(
+                    cluster, run, command, _registry_revision)
             if not dry_run:
                 self.history.update(run_id, "remote_cleaned" if result.ok else "remote_cleanup_failed",
                                     remote_removed=result.ok, remote_cleanup_diagnostic=result.diagnostic())
             return {"ok": result.ok, "run_id": run_id, "dry_run": dry_run,
+                    "retention_revision": claim['revision'], "workspace_id": shared['workspace_id'],
                     "remote_dir": run["remote_dir"], "diagnostic": result.diagnostic(),
                     "notes": ["Deletes only this registered run directory; original cluster inputs are untouched.",
                               "Only selected downloaded outputs are retained locally; unselected remote files will be lost."]}

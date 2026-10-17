@@ -44,11 +44,27 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     from hpc_mcp.tool_catalog import ADVANCED_TOOLS
                     self.assertTrue(ADVANCED_TOOLS.isdisjoint(tools))
                     for name in ('setup_flow_create', 'application_get', 'cluster_probe',
-                                 'job_get', 'job_cancel', 'job_logs', 'monitor_stop'):
+                                 'job_get', 'job_cancel', 'job_logs', 'monitor_stop',
+                                 'local_cache_cleanup', 'cluster_work_cleanup', 'retention_hold',
+                                 'retention_release', 'retention_status', 'cluster_registry_probe',
+                                 'cluster_registry_reconcile'):
                         self.assertIn(name, tools)
                     catalog = (await call(client, 'settings_get', {}))['tool_catalog']
                     self.assertEqual(catalog['profile'], 'batch')
                     self.assertFalse(catalog['advanced_enabled'])
+                    cleanup = await call(client, 'local_cache_cleanup', {})
+                    self.assertTrue(cleanup['dry_run'])
+                    self.assertEqual(cleanup['candidate_count'], 0)
+                    rejected = await call(client, 'local_cache_cleanup', {
+                        'dry_run': False, 'review_token': cleanup['review_token']})
+                    self.assertFalse(rejected['ok'])
+                    applied = await call(client, 'local_cache_cleanup', {
+                        'dry_run': False, 'review_token': cleanup['review_token'],
+                        'confirmation_note': 'Synthetic approval of exact empty cache preview'})
+                    self.assertTrue(applied['ok'])
+                    self.assertTrue(tools['local_cache_cleanup'].annotations.destructive_hint)
+                    remote = await call(client, 'cluster_work_cleanup', {})
+                    self.assertFalse(remote['ok'])  # Explicit configured cluster required.
                     unavailable = await client.call_tool('job_prepare', {})
                     self.assertTrue(unavailable.is_error)
                     self.assertTrue(tools['batch_status'].annotations.read_only_hint)
@@ -76,6 +92,61 @@ class StdioIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await call(client, 'batch_pause', {'batch_id': value['batch_id']})
                     paused = await call(client, 'batch_status', {'batch_id': value['batch_id']})
                     self.assertEqual(paused['counts'], {'paused': 2})
+
+    async def test_shared_retention_release_and_cleanup_over_real_stdio(self):
+        import test_jobs
+        from hpc_mcp.config import ConfigManager
+        for mode in ('auto', 'legacy'):
+            fixture = test_jobs.JobLifecycleTests()
+            fixture.setUp()
+            try:
+                run = fixture.prepare()
+                rid = run['run_id']
+                self.assertTrue(test_jobs.authorized_submit(fixture.jobs, rid)['ok'])
+                self.assertTrue(test_jobs.authorized_sync(fixture.jobs, rid)['ok'])
+                for path in Path(run['remote_dir']).rglob('*'):
+                    os.utime(path, (1, 1))
+                os.utime(run['remote_dir'], (1, 1))
+                ssh = fixture.bin / 'ssh'
+                ssh.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                    "os.execvp('bash',['bash','-c',' '.join(sys.argv[sys.argv.index('alias')+1:])])\n")
+                ssh.chmod(0o755)
+                config = fixture.root / 'clusters.toml'
+                ConfigManager(config, {}).set('lsf', {'ssh_host': 'alias', 'scheduler': 'lsf',
+                                                       'work_root': str(fixture.remote)})
+                params = StdioServerParameters(command=sys.executable,
+                    args=['-m', 'hpc_mcp', '--config', str(config), '--state-dir', str(fixture.state), 'serve'],
+                    env=dict(os.environ, PYTHONPATH=str(ROOT / 'src'),
+                             PATH=str(fixture.bin) + ':' + os.environ['PATH']), cwd=str(fixture.root))
+                async def call(client, name, args):
+                    response = await client.call_tool(name, args)
+                    self.assertFalse(response.is_error, response.content)
+                    return response.structured_content
+                async with Client(params, mode=mode) as client:
+                    status = await call(client, 'cluster_registry_probe', {'cluster': 'lsf'})
+                    self.assertFalse(status['node_conflict'])
+                    await call(client, 'retention_hold', {'cluster': 'lsf', 'run_ids': [rid],
+                        'holder': 'another-agent', 'reason': 'Synthetic second stage'})
+                    for holder in ('submission', 'another-agent'):
+                        plan = await call(client, 'retention_release', {'cluster': 'lsf',
+                            'run_ids': [rid], 'holder': holder, 'reason': 'Synthetic stage finished'})
+                        result = await call(client, 'retention_release', {'dry_run': False,
+                            'review_token': plan['review_token'], 'confirmation_note': 'Synthetic exact approval'})
+                        self.assertTrue(result['ok'], result)
+                        if holder == 'submission':
+                            status = await call(client, 'retention_status', {'cluster': 'lsf', 'run_ids': [rid]})
+                            self.assertFalse(status['tasks'][0]['cleanup_allowed'])
+                    plan = await call(client, 'cluster_work_cleanup', {'cluster': 'lsf', 'older_than_seconds': 0})
+                    self.assertEqual(plan['candidate_count'], 1, plan)
+                    result = await call(client, 'cluster_work_cleanup', {'dry_run': False,
+                        'review_token': plan['review_token'], 'confirmation_note': 'Synthetic exact cleanup approval'})
+                    self.assertTrue(result['ok'], result)
+                self.assertFalse(Path(run['remote_dir']).exists())
+                async with Client(params, mode=mode) as client:
+                    status = await call(client, 'retention_status', {'cluster': 'lsf', 'run_ids': [rid]})
+                    self.assertEqual(status['tasks'][0]['state'], 'deleted')
+            finally:
+                fixture.doCleanups()
 
     async def test_registered_single_input_uses_batch_and_advanced_tools_require_explicit_profile(self):
         import test_applications

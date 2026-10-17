@@ -39,10 +39,21 @@ def authorized_watch(monitor, run_ids, auto_sync=True, sync_options=None, cleanu
     return monitor.watch(run_ids, auto_sync, sync_options, cleanup_policy, reset)
 
 
+def release_retention(jobs, run_id, holder='submission'):
+    from hpc_mcp.retention import RetentionService
+    service = RetentionService(jobs)
+    plan = service.release(jobs.history.get(run_id)['cluster'], [run_id], holder,
+                           'Synthetic test explicitly releases retained task')
+    return service.release(dry_run=False, review_token=plan['review_token'],
+                           confirmation_note='Synthetic exact release confirmation')
+
+
 def authorized_cleanup(jobs, kind, run_id, *args):
     import inspect
     method = getattr(jobs, 'job_' + kind + '_cleanup')
     values = inspect.signature(method).bind(run_id, *args); values.apply_defaults()
+    if kind == 'remote' or not values.arguments['dry_run']:
+        release_retention(jobs, run_id)
     if not values.arguments['dry_run']:
         permissions = dict(jobs.history.get(run_id).get('submission_plan', {}).get('automation', {}))
         if kind == 'remote': permissions['remote_cleanup'] = True

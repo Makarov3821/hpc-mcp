@@ -69,6 +69,8 @@ def execute(jobs, run, journal):
                            'files': len(journal['manifest'])},
             sync_transfer_stats=journal['transfer_stats'],
             sync_backup=str(backup) if backup else None)
+        from .retention import RetentionService
+        RetentionService(jobs).observe(updated)
     except (OSError, ValueError) as error:
         updated = jobs.history.update(rid, 'sync_install_failed', sync_state='failed',
             sync_error=str(error), output_dir=str(staging),

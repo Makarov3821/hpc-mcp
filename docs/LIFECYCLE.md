@@ -1,5 +1,7 @@
 # 持久计算生命周期（Phase 9C）
 
+共享保留登记新增独立门禁：新提交默认保留，完成同步不释放。用户明确 retention_release 后才允许清理；保留期间计算与归位正常完成，清理标为 deferred。远程删除还核对其他客户端的声明与登录节点冲突，见 [保留登记](RETENTION.md)。
+
 生命周期复用 JobService、monitor、同步 worker 和授权门禁，按独立 run 记录进度，不重新生成脚本、不调用 LLM。默认关闭；准备、授权、启用与启动后台进程分开。历史保存在 agent 的 state/history.sqlite3，agent 退出后可读取和恢复。
 
 日常默认使用 [batch 入口](BATCH.md)，包括仅一个输入的一项批次；由批次内部登记并推进生命周期。下面的低层工具用于明确的手动操作、仅准备、诊断、已有 run 恢复或高级依赖流程，CLI 始终可用，MCP 需显式启动 serve --tool-profile advanced。

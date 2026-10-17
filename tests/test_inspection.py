@@ -121,17 +121,20 @@ class ServiceTests(unittest.TestCase):
         transport = FakeTransport([
             CommandResult(0, environment_output(missing=("sacct",))),
             CommandResult(0, (FIXTURES / "sinfo.txt").read_text()),
+            CommandResult(0, '{"ok":true,"initialized":false,"warnings":[]}'),
         ])
         result = ClusterService({"a": self.cluster}, transport).cluster_check("a")
         self.assertTrue(result["ok"])
         self.assertEqual(result["shared_storage"], "unverified")
         self.assertEqual(next(c for c in result["checks"] if c["name"] == "sacct")["status"],
                          "warning")
-        self.assertEqual(len(transport.commands), 2)
+        self.assertEqual(len(transport.commands), 3)
+        self.assertFalse(result['registry']['initialized'])
 
     def test_failed_query_fails_readiness(self):
         transport = FakeTransport([CommandResult(0, environment_output()),
-                                   CommandResult(1, stderr="access denied")])
+                                   CommandResult(1, stderr="access denied"),
+                                   CommandResult(0, '{"ok":true,"initialized":false,"warnings":[]}')])
         result = ClusterService({"a": self.cluster}, transport).cluster_check("a")
         self.assertFalse(result["ok"])
         self.assertEqual(result["checks"][-1]["status"], "failed")
@@ -168,7 +171,7 @@ class ServiceTests(unittest.TestCase):
         probe += "\ncommand.bacct\t/bin/bacct"
         transport = FakeTransport([CommandResult(0, probe), CommandResult(
             0, (FIXTURES / "bqueues_extended.txt").read_text()
-        )])
+        ), CommandResult(0, '{"ok":true,"initialized":false,"warnings":[]}')])
         result = ClusterService({"a": cluster}, transport).cluster_check("a")
         self.assertTrue(result["ok"])
         self.assertEqual(result["checks"][-1]["detail"]["queue_count"], 13)

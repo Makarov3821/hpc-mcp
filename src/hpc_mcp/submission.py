@@ -218,10 +218,12 @@ def monitor_guard(jobs, run, policy):
 def cleanup_guard(jobs, run, category, age=None, categories=None):
     plan, _ = receipt(jobs, run, verify_files=False)
     permissions = plan['automation']; policy = permissions['cleanup_policy']
-    if category == 'remote' and permissions['remote_cleanup']:
-        return
-    if category == 'cache' and policy['sync_cache_age_seconds'] is not None and age >= policy['sync_cache_age_seconds']:
-        return
-    if category == 'storage' and set(categories) <= set(policy['storage_categories']) and age >= policy['storage_age_seconds']:
-        return
-    raise SubmissionError('cleanup_authorization_required', 'Deletion scope exceeds the confirmed job plan; preview and authorize first.')
+    allowed = ((category == 'remote' and permissions['remote_cleanup'])
+        or (category == 'cache' and policy['sync_cache_age_seconds'] is not None
+            and age >= policy['sync_cache_age_seconds'])
+        or (category == 'storage' and set(categories) <= set(policy['storage_categories'])
+            and age >= policy['storage_age_seconds']))
+    if not allowed:
+        raise SubmissionError('cleanup_authorization_required', 'Deletion scope exceeds the confirmed job plan; preview and authorize first.')
+    if category != 'remote' and not run.get('retention', {}).get('released'):
+        raise SubmissionError('retention_required', 'Task data retained; explicitly release claims before local cleanup.')

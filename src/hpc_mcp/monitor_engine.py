@@ -201,6 +201,9 @@ class MonitorEngine:
                 self.service.update(entry, stage='needs_attention', next_check_at=None,
                     last_error=str(error)[:4000], failed_step='validation')
                 return
+        if needs_cleanup and not run.get('retention', {}).get('released'):
+            needs_cleanup = False
+            self.service.update(entry, cleanup_deferred='Retention claims remain; release before cleanup.')
         try:
             cleanup = self.cleanup(entry) if needs_cleanup and run.get('sync_state') == 'complete' else {}
             self.service.update(entry, notice, stage='complete', completed_at=entry.get('completed_at') or self.clock(), last_error=None, last_cleanup=cleanup,

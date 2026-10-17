@@ -324,12 +324,82 @@ def main():
     batch_review = sub.add_parser('batch-review')
     batch_review.add_argument('batch_id')
     batch_review.add_argument('--compact', action=argparse.BooleanOptionalAction, default=True)
+    for action in ('local-cache-cleanup', 'cluster-work-cleanup'):
+        cleanup = sub.add_parser(action)
+        cleanup.add_argument('--cluster')
+        cleanup.add_argument('--project-root')
+        cleanup.add_argument('--run-ids', nargs='+')
+        cleanup.add_argument('--older-than-seconds', type=int, default=604800)
+        cleanup.add_argument('--include-failed', action='store_true')
+        cleanup.add_argument('--limit', type=int, default=100)
+        cleanup.add_argument('--offset', type=int, default=0)
+        cleanup.add_argument('--apply', action='store_true')
+        cleanup.add_argument('--review-token')
+        cleanup.add_argument('--confirmation-note')
+        if action == 'local-cache-cleanup':
+            cleanup.add_argument('--categories', nargs='+')
+            cleanup.add_argument('--max-input-cache-bytes', type=int)
+    registry_probe = sub.add_parser('cluster-registry-probe')
+    registry_probe.add_argument('cluster')
+    registry_probe.add_argument('--initialize', action=argparse.BooleanOptionalAction, default=True)
+    reconcile = sub.add_parser('cluster-registry-reconcile')
+    reconcile.add_argument('--cluster')
+    reconcile.add_argument('--apply', action='store_true')
+    reconcile.add_argument('--review-token')
+    reconcile.add_argument('--confirmation-note')
+    for action in ('retention-status', 'retention-hold', 'retention-release'):
+        retention_command = sub.add_parser(action)
+        retention_command.add_argument('--cluster')
+        retention_command.add_argument('--run-ids', nargs='+')
+        if action != 'retention-status':
+            retention_command.add_argument('--holder', default='submission')
+            retention_command.add_argument('--reason')
+        if action == 'retention-release':
+            retention_command.add_argument('--apply', action='store_true')
+            retention_command.add_argument('--review-token')
+            retention_command.add_argument('--confirmation-note')
     args, unknown = parser.parse_known_args()
     if args.approval_policy:
         os.environ['HPC_MCP_APPROVAL_POLICY'] = str(Path(args.approval_policy).expanduser().resolve())
     if unknown and args.action not in legacy_actions:
         parser.error('unrecognized arguments: ' + ' '.join(unknown))
     try:
+        if args.action in ('cluster-registry-probe', 'cluster-registry-reconcile',
+                           'retention-status', 'retention-hold', 'retention-release'):
+            from .jobs import JobService
+            from .retention import RetentionService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            retention = RetentionService(JobService(clusters, args.state_dir, config_path=args.config))
+            if args.action == 'cluster-registry-probe':
+                data = retention.probe(args.cluster, args.initialize)
+            elif args.action == 'cluster-registry-reconcile':
+                data = retention.reconcile(args.cluster, not args.apply,
+                    args.review_token, args.confirmation_note)
+            elif args.action == 'retention-status':
+                data = retention.status(args.cluster, args.run_ids)
+            elif args.action == 'retention-hold':
+                data = retention.hold(args.cluster, args.run_ids, args.holder, args.reason)
+            else:
+                data = retention.release(args.cluster, args.run_ids, args.holder, args.reason,
+                    not args.apply, args.review_token, args.confirmation_note)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            sys.exit(0 if data.get('ok') else 1)
+        if args.action in ('local-cache-cleanup', 'cluster-work-cleanup'):
+            from .jobs import JobService
+            from .maintenance import MaintenanceService
+            clusters = load_config(args.config) if Path(args.config).exists() else {}
+            maintenance = MaintenanceService(JobService(clusters, args.state_dir, config_path=args.config))
+            options = {k: getattr(args, k) for k in ('cluster', 'project_root', 'run_ids',
+                'older_than_seconds', 'include_failed', 'limit', 'offset',
+                'review_token', 'confirmation_note')}
+            options['dry_run'] = not args.apply
+            if args.action == 'local-cache-cleanup':
+                options.update(categories=args.categories, max_input_cache_bytes=args.max_input_cache_bytes)
+                data = maintenance.local_cache_cleanup(**options)
+            else:
+                data = maintenance.cluster_work_cleanup(**options)
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            sys.exit(0 if data.get('ok') else 1)
         if args.action.startswith('approval-'):
             from .history import History
             from .approvals import register

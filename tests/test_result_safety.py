@@ -152,6 +152,7 @@ class ResultSafetyTests(unittest.TestCase):
         run = self.fixture.prepare()
         self.submit(run)
         self.assertTrue(test_jobs.authorized_sync(self.jobs, run['run_id'])['ok'])
+        test_jobs.release_retention(self.jobs, run['run_id'])
         test_jobs.authorize(self.jobs, run['run_id'], remote_cleanup=True)
         remote = Path(run['remote_dir'])
         file = remote / 'results/value.txt'
@@ -193,6 +194,7 @@ class ResultSafetyTests(unittest.TestCase):
         run = self.fixture.prepare()
         self.submit(run)
         self.assertTrue(test_jobs.authorized_sync(self.jobs, run['run_id'])['ok'])
+        test_jobs.release_retention(self.jobs, run['run_id'])
         test_jobs.authorize(self.jobs, run['run_id'], remote_cleanup=True)
         sha = self.fixture.bin / 'sha256sum'
         for script in ('#!/bin/bash\nexit 1\n',
@@ -217,6 +219,7 @@ class ResultSafetyTests(unittest.TestCase):
         local = Path(synced['run']['output_dir']) / unusual.relative_to(remote)
         self.assertEqual(local.stat().st_mode & 0o777, 0o750)
         self.assertEqual(local.stat().st_mtime_ns, unusual.stat().st_mtime_ns)
+        test_jobs.release_retention(self.jobs, run['run_id'])
         test_jobs.authorize(self.jobs, run['run_id'], remote_cleanup=True)
         self.assertTrue(self.jobs.job_remote_cleanup(run['run_id'])['ok'])
         self.assertFalse((remote / 'injected').exists())
@@ -226,6 +229,7 @@ class ResultSafetyTests(unittest.TestCase):
         run = self.fixture.prepare()
         self.submit(run)
         self.assertTrue(test_jobs.authorized_sync(self.jobs, run['run_id'])['ok'])
+        test_jobs.release_retention(self.jobs, run['run_id'])
         test_jobs.authorize(self.jobs, run['run_id'], remote_cleanup=True)
         remote = Path(run['remote_dir'])
         new = remote / 'results/new.txt'

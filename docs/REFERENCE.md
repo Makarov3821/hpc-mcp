@@ -4,11 +4,15 @@ MCP 字典工具同时提供 JSON 文本内容及 `structuredContent` 对象，�
 
 ## 工具模式与统一计算入口
 
+默认额外提供 local_cache_cleanup、cluster_work_cleanup，完整参数见 [MAINTENANCE.md](MAINTENANCE.md)。dry_run=true 预览返回 review_token；确认后 dry_run=false、review_token、confirmation_note 执行原范围。默认 older_than_seconds=604800、include_failed=false、limit=100、offset=0，支持 cluster／project_root／run_ids；本地另有 categories／max_input_cache_bytes。维护批准独立于作业计划，strict 模式需要对应签名，不自动安装定时任务。
+
 默认 `serve`／`serve --tool-profile batch`：单个或多个任务统一走 batch_plan、batch_start、batch_status，管理控制为 batch_pause／resume／review。单任务准备／授权／提交／同步、模板提交、高级 workflow、旧 profile 读取与手动作业清理仅在 `serve --tool-profile advanced` 暴露；下面列出的完整参考包含这些高级接口，CLI 始终保留。切换需要重启连接，不迁移状态或重交任务。
 
 安装／集群接入／脚本适配、application_list/get、历史、取消、日志、回执恢复、用量及全局监控仍默认可用。settings_get.tool_catalog 提供精确隐藏列表；不自动切换高级模式。默认隐藏工具不仅不显示，tools/call 也不可调用；已有后台服务直接复用核心模块，不受目录曝光影响。
 
 ## 接入／适配流程基础设施
+
+默认另提供 cluster_registry_probe、retention_status、retention_hold、retention_release、cluster_registry_reconcile。新提交自动保留，释放需精确计划和确认；全部声明释放后才能远程清理。节点冲突阻止删除，第二节点不打开数据库；解除冲突需独立确认。参数与 CLI 见 [跨 agent 保留登记](RETENTION.md)。
 
 setup_flow 与计算 workflow 分开，资料位于 state/onboarding/<flow_id>/workspace。详见 [流程工作区指南](SETUP_FLOWS.md)。Phase 9A 固定目录与历史，9B 已接入业务步骤、冻结确认与独立审阅循环。
 

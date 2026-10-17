@@ -1,5 +1,7 @@
 # 批量计算：一次计划、一次确认
 
+每项提交自动建立共享保留声明，批次计算／同步完成不会自动释放。阶段结束可将明确 run_ids 一次交给 retention_release 预览，经用户确认后统一释放；后续清理仍独立确认。其他 agent 需要接续远程数据时先新增自己的 holder，见 [跨 agent 保留登记](RETENTION.md)。
+
 日常计算默认使用 batch_plan → 用户确认 → batch_start → 按需 batch_status；单个输入也用一项 tasks。同一请求、集群与项目内的多个输入归入同一批次，不为每张卡分别建批次。批量入口在 MCP 内部复用注册 handler、独立 run、workflow、生命周期和同步 worker；agent 不必逐个 prepare／authorize／submit／check。客户端是否审批每次调用仍由客户端控制，批量入口减少调用次数，不取消 Phase 10 的权限检查。
 
 默认 serve 的 batch 模式只暴露统一计算路线，隐藏逐项 prepare／authorize／submit／sync、模板提交和高级 workflow 工具；隐藏工具也不能直接 tools/call。安装／适配管理、参数发现、历史、取消和诊断继续可用。单任务后端与 CLI 保留；用户明确需要仅准备、手动提交、已有 run 恢复或高级依赖时，可用 CLI 或显式启动 serve --tool-profile advanced 恢复完整 MCP 工具集。已存在 run 不重新准备以切换路线。
